@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- shorts_automated_uploader project-specific ---
+# Chrome user-data dirs per platform = your live login. Treat like a password.
+profiles/
+# Obsolete storage_state.json approach.
+sessions/
+# Upload tracking — local state, regenerated on first confirmed post.
+ledger.json

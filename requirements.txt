@@ -1,0 +1,5 @@
+# Install into ./venv :  ./venv/bin/pip install -r requirements.txt
+# No `playwright install` needed: the flow drives the system Google Chrome via
+# channel="chrome", so the bundled chromium binary is never used.
+playwright==1.60.0
+playwright-stealth==2.0.3
