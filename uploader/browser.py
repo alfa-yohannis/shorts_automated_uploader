@@ -8,6 +8,7 @@ for, and applies playwright-stealth patches.
         page = browser.new_page()
         ...
 """
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -28,7 +29,8 @@ class Monitor:
     @classmethod
     def pick(cls) -> "Monitor":
         """Return the SECOND monitor if present, else the first.
-        Falls back to a sane default if xrandr isn't available."""
+        Override with MONITOR (1-based screen number), e.g. MONITOR=1 for the
+        1st screen. Falls back to a sane default if xrandr isn't available."""
         try:
             out = subprocess.run(
                 ["xrandr", "--listmonitors"],
@@ -44,6 +46,10 @@ class Monitor:
             if not mons:
                 return cls(0, 0, 1920, 1080)
             mons.sort(key=lambda mm: mm.x)   # left-to-right
+            env = os.environ.get("MONITOR")
+            if env and env.isdigit():
+                idx = max(0, min(int(env) - 1, len(mons) - 1))   # 1-based, clamped
+                return mons[idx]
             return mons[1] if len(mons) > 1 else mons[0]
         except Exception:
             return cls(0, 0, 1920, 1080)

@@ -224,3 +224,4 @@ profiles/
 sessions/
 # Upload tracking — local state, regenerated on first confirmed post.
 ledger.json
+.claude/settings.json
