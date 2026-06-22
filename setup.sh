@@ -37,5 +37,9 @@ echo "    Check you have it + an X display:"
 echo "      google-chrome --version"
 echo "      echo \$DISPLAY        # we use :0"
 echo
-echo "    Then log in once:"
+echo "    TikTok — log in once:"
 echo "      DISPLAY=:0 ./venv/bin/python login.py tiktok"
+echo
+echo "    Instagram — needs the real-Chrome/CDP setup; see README section 13."
+echo "      (seed profiles/instagram from a logged-in Chrome profile, then:"
+echo "       DISPLAY=:0 ./venv/bin/python upload_instagram.py <video> --chrome )"

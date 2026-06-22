@@ -17,6 +17,10 @@ class UploadSkipped(Exception):
     """Raised when a video is intentionally not uploaded (rule/ledger)."""
 
 
+class AlreadyUploaded(UploadSkipped):
+    """Raised when the video is already recorded as posted for this platform."""
+
+
 class LoginRequired(Exception):
     """Raised when no saved profile exists for the platform."""
 
@@ -53,29 +57,26 @@ class VideoUploader(ABC):
             )
 
         if self.ledger.is_uploaded(video, platform=self.site) and not force:
-            when = (self.ledger.get_record(video) or {}).get("last_uploaded", "?")
-            raise UploadSkipped(
-                f"'{video.name}' was already uploaded to {self.site} on {when}. "
-                "Use --force to upload it again."
+            rec = self.ledger.get_record(video, platform=self.site) or {}
+            when = rec.get("first_uploaded") or rec.get("last_uploaded", "?")
+            raise AlreadyUploaded(
+                f"'{video.name}' has already been successfully uploaded to "
+                f"{self.site} (on {when}) — nothing to do. "
+                "Pass --force to upload it again."
             )
 
-        profile = self.settings.profiles_dir / self.site
-        if not profile.exists():
-            raise LoginRequired(
-                f"No saved profile. Run:  ./venv/bin/python login.py {self.site}"
-            )
+        # In attach mode we drive the user's real Chrome, so no saved profile needed.
+        if not self.settings.cdp_url:
+            profile = self.settings.profiles_dir / self.site
+            if not profile.exists():
+                raise LoginRequired(
+                    f"No saved profile. Run:  ./venv/bin/python login.py {self.site}"
+                )
 
-        with StealthBrowser(self.site, self.settings.profiles_dir) as browser:
+        with StealthBrowser(self.site, self.settings.profiles_dir,
+                            cdp_url=self.settings.cdp_url) as browser:
             page = browser.new_page()
-            self._navigate(page)
-            self._select_video(page, video)
-            if caption:
-                self._set_caption(page, caption)
-            if self.settings.disclose_ai:
-                self._enable_ai_disclosure(page)
-            if cover:
-                self._set_cover(page, cover)
-            posted = self._post(page)
+            posted = self._run_steps(page, video, caption, cover)
 
         if posted:
             self.ledger.mark_uploaded(video, platform=self.site, caption=caption)
@@ -103,6 +104,21 @@ class VideoUploader(ABC):
             if cand.exists():
                 return cand
         return None
+
+    # --- orchestration (override to reorder for a platform's wizard) ------
+
+    def _run_steps(self, page, video: Path, caption: str, cover: Path | None) -> bool:
+        """Default linear order. Instagram overrides this — its web wizard takes
+        the cover (Edit screen) before the caption (final screen)."""
+        self._navigate(page)
+        self._select_video(page, video)
+        if caption:
+            self._set_caption(page, caption)
+        if self.settings.disclose_ai:
+            self._enable_ai_disclosure(page)
+        if cover:
+            self._set_cover(page, cover)
+        return self._post(page)
 
     # --- per-platform steps (subclasses implement) -----------------------
 

@@ -17,3 +17,9 @@ class Settings:
 
     profiles_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "profiles")
     ledger_path: Path = field(default_factory=lambda: PROJECT_ROOT / "ledger.json")
+
+    # Attach to an already-running Chrome over the DevTools protocol instead of
+    # launching our own stealth context. Set this when a site (e.g. Instagram)
+    # only stays logged-in inside your real, keyring-backed Chrome profile.
+    # e.g. "http://127.0.0.1:9222"
+    cdp_url: str | None = None

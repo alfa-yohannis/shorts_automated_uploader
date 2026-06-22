@@ -12,9 +12,13 @@ from .config import Settings
 from .ledger import Ledger
 from .browser import StealthBrowser, Monitor
 from .auth import LoginManager
-from .uploaders import VideoUploader, TikTokUploader, UploadSkipped, LoginRequired
+from .uploaders import (
+    VideoUploader, TikTokUploader, InstagramUploader,
+    UploadSkipped, AlreadyUploaded, LoginRequired,
+)
 
 __all__ = [
     "Settings", "Ledger", "StealthBrowser", "Monitor", "LoginManager",
-    "VideoUploader", "TikTokUploader", "UploadSkipped", "LoginRequired",
+    "VideoUploader", "TikTokUploader", "InstagramUploader",
+    "UploadSkipped", "AlreadyUploaded", "LoginRequired",
 ]

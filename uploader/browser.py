@@ -50,7 +50,14 @@ class Monitor:
 
 
 class StealthBrowser:
-    """Owns the Playwright + persistent-context lifecycle for one site."""
+    """Owns the browser lifecycle for one site.
+
+    Two modes:
+      * launch (default) — start our own stealth real-Chrome persistent context.
+      * attach (cdp_url) — connect to an already-running Chrome over the DevTools
+        protocol and drive it. Used when a site only stays logged-in inside the
+        user's real, keyring-backed profile (e.g. Instagram on Linux/KDE).
+    """
 
     STEALTH_ARGS = [
         "--disable-blink-features=AutomationControlled",
@@ -59,27 +66,48 @@ class StealthBrowser:
         "--disable-infobars",
     ]
 
-    def __init__(self, site: str, profiles_dir: Path, headless: bool = False):
+    def __init__(self, site: str, profiles_dir: Path, headless: bool = False,
+                 cdp_url: str | None = None):
         self.site = site
         self.profile_dir = Path(profiles_dir) / site
         self.headless = headless
+        self.cdp_url = cdp_url
         self._pw = None
+        self._browser = None      # only set in attach mode
         self.context = None
+
+    @property
+    def attached(self) -> bool:
+        return self.cdp_url is not None
 
     def __enter__(self) -> "StealthBrowser":
         self._pw = sync_playwright().start()
-        self.context = self._launch()
-        Stealth().apply_stealth_sync(self.context)   # navigator.webdriver, plugins, etc.
+        if self.attached:
+            # connect to the user's real Chrome; reuse its existing context
+            self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+            self.context = (self._browser.contexts[0] if self._browser.contexts
+                            else self._browser.new_context())
+        else:
+            self.context = self._launch()
+            Stealth().apply_stealth_sync(self.context)   # webdriver, plugins, etc.
         return self
 
     def __exit__(self, *exc):
+        if self.attached:
+            # leave the user's Chrome open & logged in; just drop our connection
+            if self._pw is not None:
+                self._pw.stop()
+            return
         if self.context is not None:
             self.context.close()
         if self._pw is not None:
             self._pw.stop()
 
     def new_page(self):
-        """Reuse the context's first tab, or open a fresh one."""
+        """In attach mode open a fresh tab (don't hijack the user's current one);
+        in launch mode reuse the context's first tab."""
+        if self.attached:
+            return self.context.new_page()
         return self.context.pages[0] if self.context.pages else self.context.new_page()
 
     def _launch(self):
