@@ -251,6 +251,8 @@ something breaks, rerun the `uploader.dev.inspect_*` tools to rediscover.
 | Edit cover | `text=Edit cover` → modal | |
 | Cover image input | `input[accept*="image"]` (inside the cover modal) | accepts `image/jpeg, image/png, image/jpg`. |
 | Cover confirm | button **"Save"** | |
+| Post button | button **"Post"** (exact) | **Disabled until the video finishes processing** — `--post` waits up to 3 min for it to enable, else clicking does nothing and closing pops a "Leave site?" prompt. |
+| "Continue to post?" check | button **"Post now"** (exact) | Safety-check dialog ("We're still checking your video…") that can appear a few seconds *after* clicking Post; the wait loop clicks **Post now** whenever it shows. |
 | Post success | URL contains `tiktokstudio/content`, or text like "Manage posts" / "uploaded to TikTok" | |
 
 The 4 switches under "Show more" (in order): `High-quality uploads` (disabled),
