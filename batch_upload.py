@@ -36,10 +36,22 @@ PLATFORMS = ("tiktok", "instagram")
 IG_CDP_PORT = 9222
 
 
-def discover(target: Path, portrait_glob: str):
-    """Return {pattern_key: {lang: video_path}} for portrait videos, sorted."""
+def _file_date(path: Path) -> float:
+    """Best-effort creation time: the filesystem birthtime if exposed (rare on
+    Linux/FUSE such as the pCloud mount), else the modification time — the closest
+    reliable proxy for when a generated file was created."""
+    st = path.stat()
+    return getattr(st, "st_birthtime", None) or st.st_mtime
+
+
+def discover(target: Path, portrait_glob: str, order: str = "created"):
+    """Return {pattern_key: {lang: video_path}} for portrait videos.
+
+    order: "created" = oldest file first (default, so the backlog drains in the
+    order videos were produced), "created-desc" = newest first, "name" =
+    alphabetical by pattern. A pattern's date is its earliest en/id file."""
     patterns: dict[str, dict[str, Path]] = {}
-    for mp4 in sorted(target.glob("*.mp4")):
+    for mp4 in target.glob("*.mp4"):
         if not fnmatch.fnmatch(mp4.name.lower(), portrait_glob):
             continue
         stem = mp4.stem
@@ -48,7 +60,16 @@ def discover(target: Path, portrait_glob: str):
         if lang not in LANGS:
             base, lang = stem, ""        # ungrouped (no _en/_id) — keep on its own
         patterns.setdefault(base, {})[lang or stem] = mp4
-    return dict(sorted(patterns.items()))
+
+    def group_date(variants):            # earliest file in the en/id group
+        return min(_file_date(v) for v in variants.values())
+
+    if order == "name":
+        items = sorted(patterns.items())
+    else:
+        items = sorted(patterns.items(), key=lambda kv: group_date(kv[1]),
+                       reverse=(order == "created-desc"))
+    return dict(items)
 
 
 def caption_for(video: Path) -> str:
@@ -144,6 +165,9 @@ def main():
                     help="comma list: tiktok,instagram (default both)")
     ap.add_argument("--limit", type=int, default=1,
                     help="max patterns (each = en+id) to upload this run; 0 = no limit (default 1)")
+    ap.add_argument("--order", choices=["created", "created-desc", "name"], default="created",
+                    help="pattern order: created=oldest file first (default), "
+                         "created-desc=newest first, name=alphabetical")
     ap.add_argument("--no-post", action="store_true",
                     help="do NOT auto-click Post/Share (waits for a manual click)")
     ap.add_argument("--force", action="store_true", help="upload even if the ledger says posted")
@@ -160,14 +184,14 @@ def main():
 
     auto_post = not args.no_post
     ledger = Ledger(Settings().ledger_path)
-    patterns = discover(target, Settings().portrait_glob)
+    patterns = discover(target, Settings().portrait_glob, order=args.order)
     if not patterns:
         print(f"No portrait videos ({Settings().portrait_glob}) in {target}."); sys.exit(0)
 
     selected = select_patterns(patterns, platforms, ledger, args.force, args.limit)
     print(f"== batch_upload == {target}", flush=True)
     print(f"   patterns found: {len(patterns)} | selected this run: {len(selected)} "
-          f"| platforms: {','.join(platforms)} | auto_post: {auto_post}", flush=True)
+          f"| order: {args.order} | platforms: {','.join(platforms)} | auto_post: {auto_post}", flush=True)
 
     if not selected:
         print("Nothing new to upload — every selected pattern is already in the ledger.", flush=True)
@@ -175,7 +199,8 @@ def main():
 
     for key, variants in selected:
         langs = ", ".join(f"{lang}:{v.name}" for lang, v in sorted(variants.items()))
-        print(f"   • {key}  ({langs})", flush=True)
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(min(_file_date(v) for v in variants.values())))
+        print(f"   • [{when}] {key}  ({langs})", flush=True)
 
     if args.dry_run:
         print("DRY RUN — nothing uploaded.", flush=True)

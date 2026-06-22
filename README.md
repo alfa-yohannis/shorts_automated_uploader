@@ -511,10 +511,18 @@ It **auto-posts** by default (cron can't click for you) and, by default, publish
 friendly drip. Already-uploaded videos are skipped via the per-platform ledger, so
 re-runs never double-post.
 
+Patterns are processed **oldest-file-first** by default (`--order created`), so the
+queue drains in the order videos were produced. The date is each file's birthtime
+if the filesystem exposes it, else its modification time (`st_mtime`) — birthtime
+isn't available on the pCloud FUSE mount, so mtime is used there. Use
+`--order created-desc` for newest-first or `--order name` for alphabetical.
+
 ```bash
-./batch_upload.sh --dry-run                  # show what the next run WOULD post
+./batch_upload.sh --dry-run                  # show what the next run WOULD post (with dates)
 ./batch_upload.sh                            # 1 pattern (en+id) → both platforms, auto-post
 ./batch_upload.sh --limit 3                  # 3 patterns this run
+./batch_upload.sh --order created-desc       # newest videos first
+./batch_upload.sh --order name               # alphabetical (old behaviour)
 ./batch_upload.sh --platforms tiktok         # one platform only
 ./batch_upload.sh --no-post                  # stop at Post/Share for a manual click
 ./batch_upload.sh --force                    # ignore the ledger (intentional re-upload)
@@ -542,8 +550,11 @@ Any extra args pass straight through to `batch_upload.py`.
 Installed via `crontab -e`:
 
 ```cron
-0 5,11,17 * * * DISPLAY=:0.0 XAUTHORITY=/home/alfa/.Xauthority /home/alfa/projects/shorts_automated_uploader/batch_upload.sh >> /home/alfa/projects/shorts_automated_uploader/logs/cron.log 2>&1
+0 5,11,17 * * * DISPLAY=:0.0 XAUTHORITY=/home/alfa/.Xauthority /home/alfa/projects/shorts_automated_uploader/batch_upload.sh --limit 1 >> /home/alfa/projects/shorts_automated_uploader/logs/cron.log 2>&1
 ```
+
+`--limit 1` is explicit here even though it's also the default — so the per-run
+count survives any future change to the default in `batch_upload.py`.
 
 With `--limit 1`, that posts up to **3 patterns/day** to each platform. Watch a run
 live with `tail -f logs/cron.log`, or trigger one supervised by hand:
