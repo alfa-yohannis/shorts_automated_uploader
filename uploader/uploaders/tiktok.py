@@ -116,27 +116,73 @@ class TikTokUploader(VideoUploader):
         except Exception as e:
             print(f"Cover step failed ({e}); set it by hand in the window.", flush=True)
 
+    # Text that confirms a post went through.
+    _SUCCESS_TEXTS = ["being uploaded", "Manage posts", "uploaded to TikTok",
+                      "View profile", "Upload another"]
+    # The "Continue to post?" safety-check dialog ("We're still checking your
+    # video...") — its confirm button. Exact match so we don't hit the main Post.
+    _CONFIRM_NAMES = ["Post now", "Post anyway"]
+
     def _post(self, page) -> bool:
-        if self.settings.auto_post:
-            page.get_by_role("button", name="Post").first.click()
-            return self._wait_for_success(page, 60000)
-        print("\nReady. Review in the Chrome window, then click Post.", flush=True)
-        print("Watching for a confirmed post for 2 minutes...", flush=True)
-        return self._wait_for_success(page, 120000)
+        if not self.settings.auto_post:
+            print("\nReady. Review in the Chrome window, then click Post.", flush=True)
+            print("Watching for a confirmed post for 2 minutes...", flush=True)
+            return self._wait_for_success(page, 120000)
+
+        # TikTok keeps the Post button DISABLED until the video finishes
+        # uploading/processing. Clicking too early does nothing, then closing the
+        # tab pops a "Leave site?" prompt and the draft is lost — so wait for it.
+        if not self._wait_post_enabled(page, 180000):
+            print("Post button never enabled (video still processing?); not posting.", flush=True)
+            return self._wait_for_success(page, 30000)
+        page.get_by_role("button", name="Post", exact=True).first.click()
+        print("Clicked Post; handling the 'Continue to post?' check if it appears...", flush=True)
+        # the safety-check dialog can pop a few seconds later, so watch for it
+        # throughout the wait and click "Post now".
+        return self._wait_for_success(page, 120000, handle_confirm=True)
 
     @staticmethod
-    def _wait_for_success(page, timeout_ms: int) -> bool:
-        """True once TikTok confirms the post (auto OR manual click).
-        Detected by redirect to the content manager or a success dialog."""
+    def _wait_post_enabled(page, timeout_ms: int) -> bool:
+        """Wait until a visible, non-disabled 'Post' button exists."""
+        try:
+            page.wait_for_function(
+                """() => {
+                    const b = [...document.querySelectorAll('button')]
+                        .find(x => (x.innerText || '').trim() === 'Post');
+                    return !!b && !b.disabled
+                        && b.getAttribute('aria-disabled') !== 'true'
+                        && b.offsetParent !== null;
+                }""",
+                timeout=timeout_ms,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _click_confirm(self, page):
+        """Click 'Post now' on the 'Continue to post?' safety-check dialog."""
+        for name in self._CONFIRM_NAMES:
+            b = page.get_by_role("button", name=name, exact=True)
+            if b.count() and b.first.is_visible():
+                b.first.click()
+                print(f"Safety-check dialog: clicked '{name}'.", flush=True)
+                return True
+        return False
+
+    def _wait_for_success(self, page, timeout_ms: int, handle_confirm: bool = False) -> bool:
+        """True once TikTok confirms the post (auto OR manual click). Detected by
+        redirect to the content manager or a success dialog. When handle_confirm
+        is set, also clicks 'Post now' on the safety-check dialog as it appears."""
         deadline = time.time() + timeout_ms / 1000
         while time.time() < deadline:
             try:
                 if "tiktokstudio/content" in page.url:
                     return True
-                for txt in ["being uploaded", "Manage posts", "uploaded to TikTok",
-                            "View profile", "Upload another"]:
+                for txt in self._SUCCESS_TEXTS:
                     if page.get_by_text(txt, exact=False).count():
                         return True
+                if handle_confirm:
+                    self._click_confirm(page)
             except Exception:
                 pass
             page.wait_for_timeout(1500)
