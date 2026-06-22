@@ -32,7 +32,8 @@ reused by a Playwright-launched browser on this machine.
 | Auto-click **Post / Share** | ⏸ available but OFF by default (`auto_post=False`) |
 | **Instagram Reels** | ✅ working via **attach-to-real-Chrome (CDP)** — see [§13](#13-instagram-reels) |
 | &nbsp;&nbsp;↳ aspect ratio → Original + custom cover | ✅ |
-| Batch upload a whole folder | ❌ not built yet (planned — see TODO) |
+| Batch upload a whole folder | ✅ `batch_upload.py` (en+id → both platforms, ledger-aware) — see [§15](#15-batch-upload--scheduling) |
+| Scheduled drip-posting (cron) | ✅ `batch_upload.sh` at 5am/11am/5pm — see [§15](#15-batch-upload--scheduling) |
 
 **Decisions still pending from the user**
 - Whether to flip `auto_post=True` for hands-off posting (works on both platforms).
@@ -101,16 +102,26 @@ and GUI runs need the display: prefix with **`DISPLAY=:0`** (match your `$DISPLA
 
 ### 3.3 Per-platform login (do once on the new machine)
 
+Each platform has a one-time **`init_*_profile.sh`** helper that wraps the steps
+below (guards the venv, handles re-runs safely). Honors `DISPLAY` and `MONITOR`.
+
 - **TikTok** — simple, built in:
   ```bash
-  DISPLAY=:0 ./venv/bin/python login.py tiktok
+  ./init_tiktok_profile.sh                 # or: DISPLAY=:0 ./venv/bin/python login.py tiktok
   ```
-  Log in by hand; the session saves to `profiles/tiktok/`. Done.
+  Opens a real Chrome at TikTok's login; log in by hand. It polls for the
+  `sessionid` cookie and saves the session to `profiles/tiktok/`. Done. Re-prompts
+  before overwriting an existing profile.
 
-- **Instagram** — needs the real-Chrome/CDP setup. **See [§13](#13-instagram-reels)**
-  for the full procedure (it's different because IG won't reuse a Playwright
-  profile). Short version: seed `profiles/instagram/` from a Chrome profile that's
-  logged into Instagram, then use `upload_instagram.py --chrome`.
+- **Instagram** — needs the real-Chrome/CDP setup (IG won't reuse a Playwright
+  profile). Seed the profile, then log in once:
+  ```bash
+  ./init_instagram_profile.sh              # seeds profiles/instagram/ from Chrome "Default"
+  ./init_instagram_profile.sh "Profile 3"  # …or from a named Chrome profile
+  ```
+  **Chrome must be closed** during the copy (the script refuses if it's running).
+  Then run an upload with `--chrome` and log into Instagram in that window if it
+  opens logged-out. Full details in **[§13](#13-instagram-reels)**.
 
 ### 3.4 Smoke-test without uploading
 
@@ -181,6 +192,10 @@ uploader/
     ├── probe_ig_flow.py     drives the IG create→share flow, dumps each stage
     └── probe_ig_crop.py     dumps the IG crop/aspect-ratio options
 login.py · upload_tiktok.py · upload_instagram.py · list_uploaded.py   ← thin CLI entry points
+batch_upload.py          batch-upload a whole folder (en+id → both platforms), ledger-aware
+setup.sh                 fresh-clone setup (venv + deps)
+init_tiktok_profile.sh · init_instagram_profile.sh   ← one-time login/profile setup
+batch_upload.sh          cron wrapper for batch_upload.py (DISPLAY/XAUTHORITY/lock — see §15)
 tests/                   unit tests (stdlib unittest — see §14)
 ```
 
@@ -196,6 +211,9 @@ tests/                   unit tests (stdlib unittest — see §14)
 | [`uploader/uploaders/instagram.py`](uploader/uploaders/instagram.py) → `InstagramUploader` | Instagram Reels steps + selectors (see §13). Overrides `_run_steps` (IG takes the cover before the caption). |
 | [`uploader/dev/`](uploader/dev/) | **Dev tools.** TikTok: `inspect_ai`, `inspect_cover`. Instagram: `inspect_instagram`, `probe_ig_flow`, `probe_ig_crop`. Rerun to rediscover selectors when a site changes its UI. |
 | [`login.py`](login.py) · [`upload_tiktok.py`](upload_tiktok.py) · [`upload_instagram.py`](upload_instagram.py) · [`list_uploaded.py`](list_uploaded.py) | Thin CLI shims over the package. |
+| [`batch_upload.py`](batch_upload.py) | Scan a folder, group each pattern's `_en`+`_id`, upload the not-yet-posted ones to both platforms. Ledger-aware, auto-posts, `--limit` per run. See §15. |
+| `init_tiktok_profile.sh` · `init_instagram_profile.sh` | One-time profile/login setup (wrap `login.py tiktok` / the IG seed-from-Chrome copy). See §3.3 / §13.1. |
+| `batch_upload.sh` · `setup.sh` | Shell helpers. `batch_upload.sh` is the cron wrapper (sets `DISPLAY`/`XAUTHORITY`, `flock` lock); `setup.sh` builds the venv. |
 | `profiles/<site>/` | Chrome user-data dir per platform = **your login**. Treat like a password; gitignored. |
 | `sessions/` | **Obsolete.** Leftover from an earlier `storage_state.json` approach before we switched to persistent profiles. Gitignored. |
 | `requirements.txt` | Pinned deps. |
@@ -330,9 +348,9 @@ The window is positioned with `--window-position=x,y --window-size=w,h` and
 
 1. **Decide `auto_post`** — set `auto_post=True` in
    [`uploader/config.py`](uploader/config.py) for hands-off posting (both platforms).
-2. **`batch_upload.py`** — scan the `target/` folder for `*_portrait_*.mp4`,
-   skip ledger entries, upload each with its sibling `.txt` + `.png`. The OO API
-   makes this a thin loop over `TikTokUploader.upload()` / `InstagramUploader.upload()`.
+2. ~~**`batch_upload.py`**~~ — ✅ **built** (see [§15](#15-batch-upload--scheduling)):
+   scans the folder, groups each pattern's `_en`+`_id`, skips ledger entries, and
+   uploads to both platforms. Runs on cron via `batch_upload.sh`.
 3. **IG success text** — `_wait_for_success` matches "...has been shared"; if a run
    posts but isn't recorded, rerun `probe_ig_flow` past Share to capture exact text.
 4. **Caption trimming** — optionally strip the trailing keyword block for TikTok.
@@ -342,6 +360,14 @@ The window is positioned with `--window-position=x,y --window-size=w,h` and
 ## 12. Quick reference
 
 ```bash
+# --- one-time profile setup ---
+./init_tiktok_profile.sh                                     # TikTok login (wraps login.py)
+./init_instagram_profile.sh ["Profile 3"]                   # seed IG profile from real Chrome (Chrome CLOSED)
+
+# --- batch (a whole folder, ledger-aware) ---
+./batch_upload.sh --dry-run                                  # show what the next run would post
+./batch_upload.sh [--limit N] [--platforms tiktok,instagram] [--no-post] [--force]
+
 # --- TikTok ---
 DISPLAY=:0 ./venv/bin/python login.py tiktok                 # login once
 DISPLAY=:0 ./venv/bin/python upload_tiktok.py <video.mp4> [caption.txt|"text"] [cover.png] [--post] [--force]
@@ -385,6 +411,17 @@ the endpoint, then `connect_over_cdp`.
 You need `profiles/instagram/` to be a Chrome profile that can log into Instagram
 **without** the captcha wall. Best source: a copy of an **established** Chrome
 profile (one with real browsing history).
+
+**Scripted (recommended):** [`init_instagram_profile.sh`](init_instagram_profile.sh)
+does the copy below for you — it refuses to run while Chrome is open, lists the
+available profiles if you name a missing one, and prompts before overwriting:
+
+```bash
+./init_instagram_profile.sh                 # seeds from Chrome "Default"
+./init_instagram_profile.sh "Profile 3"     # …or from a named profile
+```
+
+**Manual equivalent** (what the script runs):
 
 ```bash
 # 1. find your established Chrome profiles and their accounts
@@ -458,3 +495,108 @@ plus a mocked-browser success path that records to the ledger).
 ```
 
 (They also run under `pytest` if you install it, but it isn't required.)
+
+---
+
+## 15. Batch upload & scheduling
+
+[`batch_upload.py`](batch_upload.py) uploads a whole folder, unattended. It scans
+`--dir` (default `/home/alfa/pCloudDrive/target`) for `*_portrait_*.mp4`, groups
+each pattern's **`_en` + `_id`** variants together, and uploads the ones the ledger
+says aren't posted yet — to **both TikTok and Instagram**. Each video uses its
+sibling `.txt` as the caption and `.png` as the cover (auto-detected).
+
+It **auto-posts** by default (cron can't click for you) and, by default, publishes
+**one pattern per run** (`--limit 1`) so a backlog drains as a steady, detection-
+friendly drip. Already-uploaded videos are skipped via the per-platform ledger, so
+re-runs never double-post.
+
+```bash
+./batch_upload.sh --dry-run                  # show what the next run WOULD post
+./batch_upload.sh                            # 1 pattern (en+id) → both platforms, auto-post
+./batch_upload.sh --limit 3                  # 3 patterns this run
+./batch_upload.sh --platforms tiktok         # one platform only
+./batch_upload.sh --no-post                  # stop at Post/Share for a manual click
+./batch_upload.sh --force                    # ignore the ledger (intentional re-upload)
+```
+
+Per run it does the TikTok uploads first (each in its own stealth Chrome), then
+launches the real Chrome once over CDP for the Instagram uploads and **kills it
+afterward** so the next run starts clean. One video failing doesn't abort the rest;
+a summary prints at the end.
+
+### 15.1 The cron wrapper
+
+`batch_upload.py` needs a GUI (real Chrome on screen), but cron starts with no
+environment — so run it through [`batch_upload.sh`](batch_upload.sh), which:
+- sets `DISPLAY` (`:0`), `XAUTHORITY` (`~/.Xauthority`) and `MONITOR` (1) — without
+  these, Chrome can't draw and the run dies;
+- logs to `logs/cron.log`;
+- holds an `flock` single-instance lock so an 11:00 run can't collide with a 05:00
+  run that's still going.
+
+Any extra args pass straight through to `batch_upload.py`.
+
+### 15.2 Schedule (5am / 11am / 5pm)
+
+Installed via `crontab -e`:
+
+```cron
+0 5,11,17 * * * DISPLAY=:0.0 XAUTHORITY=/home/alfa/.Xauthority /home/alfa/projects/shorts_automated_uploader/batch_upload.sh >> /home/alfa/projects/shorts_automated_uploader/logs/cron.log 2>&1
+```
+
+With `--limit 1`, that posts up to **3 patterns/day** to each platform. Watch a run
+live with `tail -f logs/cron.log`, or trigger one supervised by hand:
+`DISPLAY=:0 ./batch_upload.sh --limit 1`.
+
+---
+
+## 16. Worked examples (copy-paste)
+
+Real commands against `/home/alfa/pCloudDrive/target/`. Each video uses its sibling
+`.txt` (caption) and `.png` (cover, auto-detected).
+
+**One-time setup (per machine):**
+```bash
+./setup.sh                                  # venv + deps
+./init_tiktok_profile.sh                    # TikTok login
+./init_instagram_profile.sh                 # seed IG profile (Chrome CLOSED), then log in once
+```
+
+**Upload a single video to TikTok:**
+```bash
+DISPLAY=:0 ./venv/bin/python upload_tiktok.py \
+    /home/alfa/pCloudDrive/target/bridge_pattern_portrait_id.mp4 \
+    /home/alfa/pCloudDrive/target/bridge_pattern_portrait_id.txt --post
+```
+
+**Upload a single Reel to Instagram** (`--chrome` attaches to your real Chrome):
+```bash
+DISPLAY=:0 ./venv/bin/python upload_instagram.py \
+    /home/alfa/pCloudDrive/target/bridge_pattern_portrait_id.mp4 \
+    /home/alfa/pCloudDrive/target/bridge_pattern_portrait_id.txt --chrome --post
+```
+
+**Re-post a video that's already in the ledger** — add `--force` (otherwise it skips
+with "already uploaded"). Example: re-post the Indonesian Reel to Instagram:
+```bash
+DISPLAY=:0 ./venv/bin/python upload_instagram.py \
+    /home/alfa/pCloudDrive/target/bridge_pattern_portrait_id.mp4 \
+    /home/alfa/pCloudDrive/target/bridge_pattern_portrait_id.txt --chrome --post --force
+```
+> `--force` updates the existing record's `last_uploaded`; it does **not** create a
+> duplicate ledger entry. Drop `--post` from any command to stop at Post/Share and
+> click it yourself.
+
+**Batch (a whole folder, ledger-aware):**
+```bash
+./batch_upload.sh --dry-run                  # preview what the next run would post
+./batch_upload.sh --limit 1                  # post 1 pattern (en+id) to both platforms
+./batch_upload.sh --limit 1 --platforms instagram   # IG only
+./batch_upload.sh --force --limit 1          # re-post even if the ledger has them
+```
+
+**Check / manage history:**
+```bash
+./venv/bin/python list_uploaded.py           # dump the ledger
+```
