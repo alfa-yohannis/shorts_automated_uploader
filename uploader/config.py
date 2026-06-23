@@ -12,8 +12,14 @@ class Settings:
     fields (e.g. ``Settings(auto_post=True)``) for hands-off posting."""
 
     auto_post: bool = False          # auto-click the Post button when True
-    disclose_ai: bool = True         # turn ON the "AI-generated content" toggle
+    disclose_ai: bool = True         # turn ON the "AI-generated content" toggle (TikTok)
     portrait_glob: str = "*_portrait_*.mp4"   # only files matching this upload
+
+    # YouTube knobs.
+    yt_visibility: str = "public"    # public | unlisted | private (Visibility step)
+    yt_made_for_kids: bool = False   # the required "made for kids" audience flag
+    yt_channel_id: str = "UCEWLCMe8iwKOakYoaQ2k1eg"   # Studio channel to upload to
+    yt_license: str = "creative_commons"   # creative_commons | standard
 
     profiles_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "profiles")
     ledger_path: Path = field(default_factory=lambda: PROJECT_ROOT / "ledger.json")

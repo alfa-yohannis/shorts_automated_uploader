@@ -6,19 +6,19 @@ Public API:
     StealthBrowser  — real-Chrome persistent context as a context manager
     LoginManager    — one-time manual login per platform
     VideoUploader   — abstract template-method base
-    TikTokUploader  — TikTok Studio implementation
+    TikTokUploader / InstagramUploader / YouTubeUploader — platform implementations
 """
 from .config import Settings
 from .ledger import Ledger
 from .browser import StealthBrowser, Monitor
 from .auth import LoginManager
 from .uploaders import (
-    VideoUploader, TikTokUploader, InstagramUploader,
+    VideoUploader, TikTokUploader, InstagramUploader, YouTubeUploader,
     UploadSkipped, AlreadyUploaded, LoginRequired,
 )
 
 __all__ = [
     "Settings", "Ledger", "StealthBrowser", "Monitor", "LoginManager",
-    "VideoUploader", "TikTokUploader", "InstagramUploader",
+    "VideoUploader", "TikTokUploader", "InstagramUploader", "YouTubeUploader",
     "UploadSkipped", "AlreadyUploaded", "LoginRequired",
 ]

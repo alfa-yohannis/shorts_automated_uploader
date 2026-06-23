@@ -32,6 +32,9 @@ class VideoUploader(ABC):
     site: str = ""
     #: page the upload flow runs on.
     upload_url: str = ""
+    #: enforce the portrait-only rule? TikTok/IG are Shorts-only (True); YouTube
+    #: also takes landscape videos, so it sets this False.
+    enforce_portrait: bool = True
 
     def __init__(self, settings: Settings | None = None, ledger: Ledger | None = None):
         self.settings = settings or Settings()
@@ -50,7 +53,7 @@ class VideoUploader(ABC):
         LoginRequired (no saved profile)."""
         video = Path(video).resolve()
 
-        if not self.is_portrait(video):
+        if self.enforce_portrait and not self.is_portrait(video):
             raise UploadSkipped(
                 f"'{video.name}' is not a portrait video "
                 f"({self.settings.portrait_glob}). Not uploading."

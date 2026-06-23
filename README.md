@@ -1,15 +1,16 @@
-# Automated Browser — TikTok + Instagram Reels Video Uploader
+# Automated Browser — TikTok + Instagram Reels + YouTube Video Uploader
 
-Drives a **real Google Chrome** via Playwright to upload videos to **TikTok** and
-**Instagram Reels** with a caption and a custom cover/thumbnail (plus the
-**AI-generated content** disclosure on TikTok). You log in by hand **once** per
-platform; the session is reused after. A ledger prevents the same video from
-being posted twice. Object-oriented: logic lives in the `uploader/` package,
-with thin CLI shims at the root.
+Drives a **real Google Chrome** via Playwright to upload videos to **TikTok**,
+**Instagram Reels**, and **YouTube** (Shorts + long-form) with a caption and a
+custom cover/thumbnail (plus the **AI-generated content** disclosure on TikTok).
+You log in by hand **once** per platform; the session is reused after. A ledger
+prevents the same video from being posted twice. Object-oriented: logic lives in
+the `uploader/` package, with thin CLI shims at the root.
 
-Instagram needs a different approach than TikTok — it attaches to your **real
-Chrome over CDP** (see [§13](#13-instagram-reels)) because its session can't be
-reused by a Playwright-launched browser on this machine.
+Instagram and YouTube need a different approach than TikTok — they attach to your
+**real Chrome over CDP** (see [§13](#13-instagram-reels) / [§17](#17-youtube))
+because their sessions can't be reused by a Playwright-launched browser on this
+machine.
 
 > Working directory: `/data1/projects/shorts_automated_uploader`
 > Python: 3.12 · Playwright 1.60 · runs on Linux/X11 (`DISPLAY=:0`)
@@ -32,6 +33,9 @@ reused by a Playwright-launched browser on this machine.
 | Auto-click **Post / Share** | ⏸ available but OFF by default (`auto_post=False`) |
 | **Instagram Reels** | ✅ working via **attach-to-real-Chrome (CDP)** — see [§13](#13-instagram-reels) |
 | &nbsp;&nbsp;↳ aspect ratio → Original + custom cover | ✅ |
+| **YouTube** (Shorts + landscape) | ✅ working via **attach-to-real-Chrome (CDP)** — see [§17](#17-youtube) |
+| &nbsp;&nbsp;↳ title/desc/tags, language, recording date, CC license, not-for-kids, altered-content (No) | ✅ |
+| &nbsp;&nbsp;↳ Shorts "related video" link | ⚠️ best-effort (see [§17.4](#174-related-video-best-effort)) |
 | Batch upload a whole folder | ✅ `batch_upload.py` (en+id → both platforms, ledger-aware) — see [§15](#15-batch-upload--scheduling) |
 | Scheduled drip-posting (cron) | ✅ `batch_upload.sh` at 5am/11am/5pm — see [§15](#15-batch-upload--scheduling) |
 
@@ -186,24 +190,26 @@ uploader/
 ├── uploaders/
 │   ├── base.py          VideoUploader — abstract template-method base
 │   ├── tiktok.py        TikTokUploader — TikTok Studio implementation
-│   └── instagram.py     InstagramUploader — Reels via CDP-attached real Chrome
+│   ├── instagram.py     InstagramUploader — Reels via CDP-attached real Chrome
+│   └── youtube.py       YouTubeUploader — Studio upload via CDP-attached real Chrome (§17)
 └── dev/
     ├── inspect_ai.py        TikTok AI-toggle selector probe
     ├── inspect_cover.py     TikTok cover-modal selector probe
     ├── inspect_instagram.py IG DOM snapshotter (CDP-aware)
     ├── probe_ig_flow.py     drives the IG create→share flow, dumps each stage
-    └── probe_ig_crop.py     dumps the IG crop/aspect-ratio options
-login.py · upload_tiktok.py · upload_instagram.py · list_uploaded.py   ← thin CLI entry points
+    ├── probe_ig_crop.py     dumps the IG crop/aspect-ratio options
+    └── inspect_youtube.py   YouTube Studio DOM snapshotter (CDP-aware)
+login.py · upload_tiktok.py · upload_instagram.py · upload_youtube.py · list_uploaded.py   ← thin CLI entry points
 batch_upload.py          batch-upload a whole folder (en+id → both platforms), ledger-aware
 setup.sh                 fresh-clone setup (venv + deps)
-init_tiktok_profile.sh · init_instagram_profile.sh   ← one-time login/profile setup
+init_tiktok_profile.sh · init_instagram_profile.sh · init_youtube_profile.sh   ← one-time login/profile setup
 batch_upload.sh          cron wrapper for batch_upload.py (DISPLAY/XAUTHORITY/lock — see §15)
 tests/                   unit tests (stdlib unittest — see §14)
 ```
 
 | Module / class | Purpose |
 |---|---|
-| [`uploader/config.py`](uploader/config.py) → `Settings` | Tunable knobs (`auto_post`, `disclose_ai`, `portrait_glob`, `cdp_url`) and resolved paths (`profiles_dir`, `ledger_path`). Override per-call, e.g. `Settings(auto_post=True)`. |
+| [`uploader/config.py`](uploader/config.py) → `Settings` | Tunable knobs (`auto_post`, `disclose_ai`, `portrait_glob`, `cdp_url`; YouTube: `yt_visibility`, `yt_made_for_kids`, `yt_license`, `yt_channel_id`) and resolved paths (`profiles_dir`, `ledger_path`). Override per-call, e.g. `Settings(auto_post=True)`. |
 | [`uploader/browser.py`](uploader/browser.py) → `StealthBrowser`, `Monitor` | Context manager with two modes: **launch** (own stealth real-Chrome profile, used by TikTok) or **attach** (`cdp_url` → connect to a running Chrome over CDP, used by Instagram). `Monitor.pick()` reads `xrandr` for the 2nd monitor (falls back to 1st). |
 | [`uploader/ledger.py`](uploader/ledger.py) → `Ledger` | Upload tracking, **one list per platform** (`{platform: {hash: record}}`). `is_uploaded(path, platform)`, `mark_uploaded()`, `get_record()`, `list_records()`, `video_key()`. Auto-migrates the old single-list format. Data in `ledger.json`. |
 | [`uploader/auth.py`](uploader/auth.py) → `LoginManager` | One-time manual login (TikTok). Polls for the `sessionid` cookie, then exits. |
@@ -211,10 +217,11 @@ tests/                   unit tests (stdlib unittest — see §14)
 | [`uploader/uploaders/base.py`](uploader/uploaders/base.py) → `VideoUploader` | Abstract base. `upload()` runs the rules (portrait, ledger, login/CDP guard) + lifecycle + records on success; `_run_steps()` is the overridable order. Raises `UploadSkipped` / `LoginRequired`. |
 | [`uploader/uploaders/tiktok.py`](uploader/uploaders/tiktok.py) → `TikTokUploader` | TikTok Studio steps + selectors (see §7). |
 | [`uploader/uploaders/instagram.py`](uploader/uploaders/instagram.py) → `InstagramUploader` | Instagram Reels steps + selectors (see §13). Overrides `_run_steps` (IG takes the cover before the caption). |
-| [`uploader/dev/`](uploader/dev/) | **Dev tools.** TikTok: `inspect_ai`, `inspect_cover`. Instagram: `inspect_instagram`, `probe_ig_flow`, `probe_ig_crop`. Rerun to rediscover selectors when a site changes its UI. |
-| [`login.py`](login.py) · [`upload_tiktok.py`](upload_tiktok.py) · [`upload_instagram.py`](upload_instagram.py) · [`list_uploaded.py`](list_uploaded.py) | Thin CLI shims over the package. |
+| [`uploader/uploaders/youtube.py`](uploader/uploaders/youtube.py) → `YouTubeUploader` | YouTube Studio steps + selectors (see §17). Accepts landscape too (`enforce_portrait=False`); parses TITLE/DESCRIPTION/KEYWORDS; sets language, recording date, license, audience. |
+| [`uploader/dev/`](uploader/dev/) | **Dev tools.** TikTok: `inspect_ai`, `inspect_cover`. Instagram: `inspect_instagram`, `probe_ig_flow`, `probe_ig_crop`. YouTube: `inspect_youtube`. Rerun to rediscover selectors when a site changes its UI. |
+| [`login.py`](login.py) · [`upload_tiktok.py`](upload_tiktok.py) · [`upload_instagram.py`](upload_instagram.py) · [`upload_youtube.py`](upload_youtube.py) · [`list_uploaded.py`](list_uploaded.py) | Thin CLI shims over the package. |
 | [`batch_upload.py`](batch_upload.py) | Scan a folder, group each pattern's `_en`+`_id`, upload the not-yet-posted ones to both platforms. Ledger-aware, auto-posts, `--limit` per run. See §15. |
-| `init_tiktok_profile.sh` · `init_instagram_profile.sh` | One-time profile/login setup (wrap `login.py tiktok` / the IG seed-from-Chrome copy). See §3.3 / §13.1. |
+| `init_tiktok_profile.sh` · `init_instagram_profile.sh` · `init_youtube_profile.sh` | One-time profile/login setup (wrap `login.py tiktok` / the IG & YT seed-from-Chrome copy). See §3.3 / §13.1 / §17.1. |
 | `batch_upload.sh` · `setup.sh` | Shell helpers. `batch_upload.sh` is the cron wrapper (sets `DISPLAY`/`XAUTHORITY`, `flock` lock); `setup.sh` builds the venv. |
 | `profiles/<site>/` | Chrome user-data dir per platform = **your login**. Treat like a password; gitignored. |
 | `sessions/` | **Obsolete.** Leftover from an earlier `storage_state.json` approach before we switched to persistent profiles. Gitignored. |
@@ -288,7 +295,8 @@ The 4 switches under "Show more" (in order): `High-quality uploads` (disabled),
   ```json
   {
     "tiktok":    { "<sha256>": {name, path, caption_preview, first_uploaded, last_uploaded} },
-    "instagram": { "<sha256>": {...} }
+    "instagram": { "<sha256>": {...} },
+    "youtube":   { "<sha256>": {...} }
   }
   ```
   So each platform has its own list. A video posted to Instagram but **not** TikTok
@@ -365,6 +373,7 @@ The window is positioned with `--window-position=x,y --window-size=w,h` and
 # --- one-time profile setup ---
 ./init_tiktok_profile.sh                                     # TikTok login (wraps login.py)
 ./init_instagram_profile.sh ["Profile 3"]                   # seed IG profile from real Chrome (Chrome CLOSED)
+./init_youtube_profile.sh ["Profile 3"]                     # seed YT profile from real Chrome (Chrome CLOSED)
 
 # --- batch (a whole folder, ledger-aware) ---
 ./batch_upload.sh --dry-run                                  # show what the next run would post
@@ -377,16 +386,20 @@ DISPLAY=:0 ./venv/bin/python upload_tiktok.py <video.mp4> [caption.txt|"text"] [
 # --- Instagram Reels (attaches to real Chrome; see §13) ---
 DISPLAY=:0 ./venv/bin/python upload_instagram.py <video.mp4> [caption.txt|"text"] [cover.png] --chrome [--post] [--force]
 
+# --- YouTube (Shorts + landscape; attaches to real Chrome; see §17) ---
+DISPLAY=:0 ./venv/bin/python upload_youtube.py <video.mp4> [caption.txt] [cover.png] --chrome [--visibility public|unlisted|private] [--post] [--force]
+
 # see uploaded history
 ./venv/bin/python list_uploaded.py
 
 # free a stuck profile lock
-pkill -f "profiles/tiktok"          # or profiles/instagram
+pkill -f "profiles/tiktok"          # or profiles/instagram, profiles/youtube
 
 # rediscover selectors if a site's UI changes
 DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_ai
 DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_cover
 DISPLAY=:0 ./venv/bin/python -m uploader.dev.probe_ig_flow --cdp http://127.0.0.1:9222
+DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_youtube --chrome
 ```
 
 Config flags live in [`uploader/config.py`](uploader/config.py) (`Settings`):
@@ -639,4 +652,95 @@ DISPLAY=:0 ./venv/bin/python upload_instagram.py \
 **Check / manage history:**
 ```bash
 ./venv/bin/python list_uploaded.py           # dump the ledger
+```
+
+---
+
+## 17. YouTube
+
+YouTube is driven like Instagram — **attach to your real, signed-in Chrome over
+CDP** (`upload_youtube.py --chrome`), because Google bot-detects scripted logins.
+`profiles/youtube/` holds the session, seeded from your normal Chrome. Unlike
+TikTok/IG this also takes **landscape** videos, not just portrait Shorts
+(`enforce_portrait = False`) — a portrait `*_portrait_*.mp4` is auto-classified as
+a Short, landscape becomes a regular video.
+
+It navigates straight to the channel's upload page
+(`studio.youtube.com/channel/<id>/videos/upload?d=ud`, from `Settings.yt_channel_id`)
+so the upload dialog opens directly — no Create-menu click, no channel picker.
+
+### 17.1 One-time setup
+
+Same copy-from-real-Chrome flow as Instagram (Google captcha-walls fresh logins in
+an automated window, so the session must be **copied**, not typed):
+
+```bash
+./init_youtube_profile.sh                 # copy from Chrome "Default" + verify signed-in
+./init_youtube_profile.sh "Profile 3"     # …or a named profile
+```
+
+Sign into youtube.com in your **normal** Chrome first, **fully quit Chrome**, then
+run it. The script copies the profile, opens a window to verify the avatar shows
+(signed in), and closes it cleanly to flush the session. See §13.1 for the same
+pattern explained in depth.
+
+### 17.2 Upload a video
+
+```bash
+DISPLAY=:0 ./venv/bin/python upload_youtube.py \
+    <video.mp4> [caption.txt] [cover.png] --chrome \
+    [--visibility public|unlisted|private] [--made-for-kids] [--channel <id>] [--post] [--force]
+```
+- `--chrome` — launch real Chrome on `profiles/youtube` and attach (the normal way);
+  `--cdp http://127.0.0.1:9222` attaches to a Chrome you already started.
+- `--visibility` — default **public**. `--post` clicks **Publish** after waiting for
+  YouTube's **"Checks complete"** (so it doesn't trip the *"still checking — you may get a
+  strike"* warning; it confirms **"Publish anyway"** if checks run long). Without `--post`
+  the run stops on the Visibility step as a **draft** (records nothing — see §16).
+- Cover/thumbnail is **landscape-only** (the web app rejects Short thumbnails, so it's
+  skipped for portrait).
+- Same `--force` / ledger as the other platforms (`youtube` is its own ledger list).
+
+### 17.3 Caption → metadata
+
+The `.txt` uses marker lines; the uploader parses them into the right fields:
+```
+TITLE
+<the title>                 → video title (≤100 chars)
+DESCRIPTION
+<body + #hashtags>          → description
+KEYWORDS
+<comma, separated, list>    → tags
+```
+Also set automatically per video:
+- **Audience**: *not made for kids* (override with `--made-for-kids`).
+- **Altered content / AI use**: *No* — it lives **below "Show more"**, which the uploader
+  expands before setting it (and the audience/altered radios).
+- **Video language**: from the file suffix — `_en` → English, `_id` → Indonesian. The
+  language list is a flat ~240-item menu (no search) that keeps every item in the DOM even
+  when closed — so the uploader opens it (checking the menu is *visibly* open), **scrolls
+  the listbox** to the exact-match item, and clicks it.
+- **Recording date**: today.
+- **License**: Creative Commons - Attribution (`yt_license`; `standard` for the default).
+- **Visibility**: `yt_visibility` / `--visibility`.
+
+### 17.4 Related video (best-effort)
+
+Everything in §17.3 is reliable. The one **best-effort** field is the Shorts
+**"Related video"** link: the uploader picks a **random** other `*_portrait_<lang>`
+title from the same folder (same language, excluding the current one), searches the
+picker (`ytcp-video-pick-dialog` → "Search your videos", results are `ytcp-entity-card`),
+and links the top result. It **skips cleanly** when the section's **"Add" button isn't
+found** (its selector still eludes discovery) or no candidate is on the channel yet.
+
+> Earlier this section claimed altered-content was "inconsistent / A/B" — that was wrong.
+> It simply lives **below "Show more"**; expanding that first makes it reliable (§17.3).
+
+### 17.5 If YouTube changes its UI
+
+YouTube Studio uses Polymer `ytcp-*` / `tp-yt-*` custom elements that change. Re-probe
+against the signed-in session, then update the selector constants in
+[`uploader/uploaders/youtube.py`](uploader/uploaders/youtube.py):
+```bash
+DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_youtube --chrome
 ```

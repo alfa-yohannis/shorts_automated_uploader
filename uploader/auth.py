@@ -16,6 +16,11 @@ class LoginManager:
     SITES = {
         "tiktok": {"url": "https://www.tiktok.com/login", "cookie": "sessionid"},
         "instagram": {"url": "https://www.instagram.com/accounts/login/", "cookie": "sessionid"},
+        # Google sets LOGIN_INFO once you're signed into YouTube. (Google often
+        # captcha-walls scripted logins — if so, seed profiles/youtube from your
+        # real Chrome and use upload_youtube.py --chrome, like Instagram.)
+        "youtube": {"url": "https://accounts.google.com/ServiceLogin?service=youtube",
+                    "cookie": "LOGIN_INFO"},
     }
 
     def __init__(self, settings: Settings | None = None):
