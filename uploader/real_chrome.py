@@ -10,13 +10,34 @@ Notes baked in:
   * Chrome 136+ refuses remote debugging on the DEFAULT user-data-dir, so we
     point at a dedicated dir (a copy of the trusted profile).
   * connecting external tools over CDP needs --remote-allow-origins.
+  * Instagram's cookies are keyring-encrypted ("v11"); Chrome decrypts them via the
+    secret-service over the session D-Bus. keyring_env() points XDG_RUNTIME_DIR +
+    DBUS_SESSION_BUS_ADDRESS at the user's running bus so the keyring is reachable
+    even from a bare environment (e.g. cron). Critical: a Chrome that CAN'T decrypt
+    the v11 cookies DROPS them — a keyring-less launch silently destroys the saved
+    session. (We tried --password-store=basic / v10 to sidestep the keyring, but a
+    fresh login inside this automation/CDP Chrome gets captcha-walled by Instagram,
+    so the only reliable session is one *copied in from your real Chrome* via
+    init_instagram_profile.sh — and those are v11. Hence the keyring route.)
 """
 import json
+import os
 import shutil
 import subprocess
 import time
 import urllib.request
 from pathlib import Path
+
+
+def keyring_env() -> dict:
+    """A copy of os.environ with XDG_RUNTIME_DIR + DBUS_SESSION_BUS_ADDRESS filled
+    in (pointing at the user's session bus) if absent, so the launched Chrome can
+    reach the keyring and decrypt — not drop — Instagram's v11 cookies, even when
+    the caller's environment lacks them (e.g. cron)."""
+    env = os.environ.copy()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={env['XDG_RUNTIME_DIR']}/bus")
+    return env
 
 
 def chrome_binary() -> str:
@@ -43,7 +64,8 @@ def launch_with_cdp(user_data_dir: Path, port: int = 9222, url: str | None = Non
     ]
     if url:
         args.append(url)
-    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(args, env=keyring_env(),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     endpoint = f"http://127.0.0.1:{port}/json/version"
     deadline = time.time() + wait_seconds

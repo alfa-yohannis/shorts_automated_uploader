@@ -20,6 +20,16 @@ export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
 # Which monitor the TikTok window opens on (1-based); see uploader/browser.py.
 export MONITOR="${MONITOR:-1}"
 
+# --- keyring access for Instagram's keyring-encrypted (v11) cookies ---
+# Instagram's session cookies are encrypted with the OS keyring; Chrome decrypts
+# them through the secret-service over the *session* D-Bus. Cron starts without a
+# D-Bus session, so a scheduled Chrome can't reach the keyring and lands LOGGED
+# OUT (TikTok is unaffected — Playwright forces a portable cookie store). Point at
+# the user's running session bus so cron-launched Chrome reaches the (already
+# unlocked, because you're logged into the desktop) keyring like an interactive run.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+
 mkdir -p logs
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "================ $STAMP  batch_upload.sh $* ================"

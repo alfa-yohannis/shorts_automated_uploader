@@ -78,9 +78,13 @@ class VideoUploader(ABC):
             page = browser.new_page()
             posted = self._run_steps(page, video, caption, cover)
 
-        if posted:
+        # --no-post (auto_post=False) is a manual / preview run: never touch the
+        # ledger — even if a manual Share is detected — so it stays re-runnable.
+        if posted and self.settings.auto_post:
             self.ledger.mark_uploaded(video, platform=self.site, caption=caption)
             print(f"POSTED & recorded in ledger: {video.name}", flush=True)
+        elif posted:
+            print(f"Shared, but --no-post -> NOT recorded in the ledger (re-runnable).", flush=True)
         else:
             print("No confirmed post detected -> NOT recorded (safe to retry).", flush=True)
         return posted

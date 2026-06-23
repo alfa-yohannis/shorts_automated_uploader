@@ -28,6 +28,15 @@ class InstagramUploader(VideoUploader):
         "Your reel", "Your post",
     ]
 
+    # One-off modals IG throws up right after a login (especially "Log in with
+    # Facebook"): "Save your login info?", notifications, cookie consent. These
+    # cover the New-post button, so we click them away before driving the UI.
+    _DISMISS_BUTTONS = [
+        "Not now", "Not Now", "Dismiss", "Cancel",
+        "Allow all cookies", "Decline optional cookies",
+        "Only allow essential cookies",
+    ]
+
     # IG's wizard takes the cover before the caption, so we override the order.
     def _run_steps(self, page, video: Path, caption: str, cover: Path | None) -> bool:
         self._navigate(page)
@@ -51,13 +60,62 @@ class InstagramUploader(VideoUploader):
                 print(f"nav attempt {attempt + 1} failed ({e}); retrying...", flush=True)
                 page.wait_for_timeout(2000)
         page.wait_for_timeout(3500)
+        self._dismiss_interstitials(page)
+        self._require_logged_in(page)
+
+    def _dismiss_interstitials(self, page):
+        """Click away the one-off modals IG shows after a login (Save login info,
+        notifications, cookie consent) so they don't cover the New-post button."""
+        for _ in range(3):
+            clicked = False
+            for name in self._DISMISS_BUTTONS:
+                try:
+                    loc = page.get_by_role("button", name=name, exact=True)
+                    if loc.count() and loc.first.is_visible():
+                        loc.first.click()
+                        print(f"Dismissed interstitial: '{name}'.", flush=True)
+                        page.wait_for_timeout(1000)
+                        clicked = True
+                except Exception:
+                    pass
+            if not clicked:
+                break
+
+    def _require_logged_in(self, page):
+        """Raise a clear error if the session is logged out (login form present),
+        instead of a cryptic 'New post' timeout later."""
+        if page.locator('input[name="username"]').count():
+            raise RuntimeError(
+                "Instagram session is LOGGED OUT (login form present). Re-login: "
+                "./init_instagram_profile.sh (or launch the IG profile and sign in "
+                "with Facebook), then retry."
+            )
+
+    def _open_create_menu(self, page):
+        """Click 'New post' then 'Post'. Robust to a slow home and post-login
+        modals: wait for the button, dismissing interstitials and reloading once
+        per attempt if it doesn't show."""
+        for attempt in range(3):
+            self._dismiss_interstitials(page)
+            try:
+                np = page.locator('svg[aria-label="New post"]').first
+                np.wait_for(state="visible", timeout=15000)
+                np.click()
+                page.wait_for_timeout(1500)
+                self._click_text(page, "Post")
+                page.wait_for_timeout(2000)
+                return
+            except Exception as e:
+                print(f"'New post' not ready (attempt {attempt + 1}/3: {e}); "
+                      "dismissing modals + reloading...", flush=True)
+                self._require_logged_in(page)       # raises if logged out
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_timeout(4000)
+        raise RuntimeError("Could not open the Instagram create menu ('New post' never appeared).")
 
     def _select_video(self, page, video: Path):
         # open the create menu and choose "Post"
-        page.locator('svg[aria-label="New post"]').first.click(timeout=15000)
-        page.wait_for_timeout(1500)
-        self._click_text(page, "Post")
-        page.wait_for_timeout(2000)
+        self._open_create_menu(page)
         # the create dialog exposes a hidden file input (accepts video/mp4)
         page.wait_for_selector("input[type=file]", state="attached", timeout=20000)
         page.set_input_files("input[type=file]", str(video))

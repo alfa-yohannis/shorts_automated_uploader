@@ -169,7 +169,8 @@ def main():
                     help="pattern order: created=oldest file first (default), "
                          "created-desc=newest first, name=alphabetical")
     ap.add_argument("--no-post", action="store_true",
-                    help="do NOT auto-click Post/Share (waits for a manual click)")
+                    help="do NOT auto-click Post/Share (waits for a manual click); "
+                         "a manual share is NOT recorded in the ledger (re-runnable)")
     ap.add_argument("--force", action="store_true", help="upload even if the ledger says posted")
     ap.add_argument("--dry-run", action="store_true", help="list what would upload, then exit")
     args = ap.parse_args()

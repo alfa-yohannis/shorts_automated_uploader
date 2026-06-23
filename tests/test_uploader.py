@@ -108,10 +108,18 @@ class UploadGuardTests(unittest.TestCase):
 
     def test_success_records_ledger(self):
         with mock.patch("uploader.uploaders.base.StealthBrowser"):
-            posted = self._uploader(cdp_url="http://x").upload(self.video, caption="hi")
+            posted = self._uploader(cdp_url="http://x", auto_post=True).upload(self.video, caption="hi")
         self.assertTrue(posted)
         self.assertTrue(self.ledger.is_uploaded(self.video, "tiktok"))
         self.assertFalse(self.ledger.is_uploaded(self.video, "instagram"))
+
+    def test_no_post_does_not_record(self):
+        # --no-post (auto_post=False) is a manual/preview run: even a detected
+        # share must NOT be recorded, so the video stays re-runnable.
+        with mock.patch("uploader.uploaders.base.StealthBrowser"):
+            posted = self._uploader(cdp_url="http://x", auto_post=False).upload(self.video, caption="hi")
+        self.assertTrue(posted)                                       # it did "post"
+        self.assertFalse(self.ledger.is_uploaded(self.video, "tiktok"))   # but not recorded
 
 
 if __name__ == "__main__":

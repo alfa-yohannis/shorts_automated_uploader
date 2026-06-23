@@ -155,7 +155,9 @@ DISPLAY=:0 ./venv/bin/python upload_tiktok.py \
 - **Arg 3** *(optional)* — a cover image. If omitted, a sibling `<video-name>.png/.jpg`
   is auto-detected and used.
 - **`--post`** *(optional flag)* — click Post automatically (hands-off); otherwise it
-  waits ~2 min for you to click.
+  waits ~2 min for you to click. **The ledger records only a *successful* auto-`--post`** —
+  if `--post` is set but the post is never confirmed it's left unrecorded (safe to retry),
+  and a manual click (no `--post`) is treated as a preview and never recorded (re-runnable).
 - **`--force`** *(optional flag)* — upload even if the ledger says it was already posted.
 
 The window opens **maximized on the 2nd monitor**, does video → caption → AI toggle →
@@ -462,7 +464,8 @@ DISPLAY=:0 ./venv/bin/python upload_instagram.py \
 - `--chrome` — launch real Chrome on `profiles/instagram` and attach (the normal way).
 - `--cdp http://127.0.0.1:9222` — instead attach to a Chrome you already started.
 - `--post` — click **Share** automatically (hands-off). Without it, the flow stops at
-  Share and waits ~2 min for **you** to click (and still records once it detects the post).
+  Share and waits ~2 min for **you** to click — and a manual share is **NOT** recorded
+  in the ledger (treated as a manual/preview run, so it stays re-runnable).
 - Same positional args / `--force` / portrait rule / ledger as TikTok.
 
 It runs: **New post → Post → select video → crop set to *Original* → cover via
@@ -524,7 +527,7 @@ isn't available on the pCloud FUSE mount, so mtime is used there. Use
 ./batch_upload.sh --order created-desc       # newest videos first
 ./batch_upload.sh --order name               # alphabetical (old behaviour)
 ./batch_upload.sh --platforms tiktok         # one platform only
-./batch_upload.sh --no-post                  # stop at Post/Share for a manual click
+./batch_upload.sh --no-post                  # stop at Post/Share for a manual click (NOT recorded)
 ./batch_upload.sh --force                    # ignore the ledger (intentional re-upload)
 ```
 
@@ -539,9 +542,34 @@ a summary prints at the end.
 environment — so run it through [`batch_upload.sh`](batch_upload.sh), which:
 - sets `DISPLAY` (`:0`), `XAUTHORITY` (`~/.Xauthority`) and `MONITOR` (1) — without
   these, Chrome can't draw and the run dies;
+- sets `XDG_RUNTIME_DIR` + `DBUS_SESSION_BUS_ADDRESS` (`/run/user/<uid>/bus`) so
+  Chrome can reach the **keyring** and decrypt Instagram's session — see §15.3;
 - logs to `logs/cron.log`;
 - holds an `flock` single-instance lock so an 11:00 run can't collide with a 05:00
   run that's still going.
+
+### 15.3 Instagram under cron (the keyring gotcha)
+
+Instagram's session cookies are encrypted with the OS keyring (Chrome "v11").
+Chrome decrypts them through the **secret-service over the session D-Bus** — which
+cron doesn't have, so a naive scheduled run launches Chrome with no keyring access
+and lands **logged out** (the upload then times out waiting for the "New post"
+button). TikTok is immune: Playwright forces a portable cookie store (`--password-
+store=basic`), so its cookies need no keyring.
+
+The wrapper fixes this by exporting the user's running session bus:
+
+```bash
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+```
+
+Verified with an A/B probe under a stripped (cron-like) environment: **with** these
+vars Chrome lands logged-in; **without** them it lands logged-out. The login keyring
+stays unlocked for the whole desktop session (a locked *screen* is fine) — so this
+works as long as **you're logged into the desktop**. If you fully log out, IG cron
+runs can't decrypt the session (but the on-screen Chrome wouldn't have a display
+then anyway). TikTok keeps working regardless.
 
 Any extra args pass straight through to `batch_upload.py`.
 
@@ -597,7 +625,8 @@ DISPLAY=:0 ./venv/bin/python upload_instagram.py \
 ```
 > `--force` updates the existing record's `last_uploaded`; it does **not** create a
 > duplicate ledger entry. Drop `--post` from any command to stop at Post/Share and
-> click it yourself.
+> click it yourself — a manual share is **not** recorded in the ledger, so use
+> `--post` (or mark it by hand) when you want the run tracked.
 
 **Batch (a whole folder, ledger-aware):**
 ```bash
