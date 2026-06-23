@@ -2,7 +2,9 @@
 
 Scans a folder for portrait videos (``*_portrait_*.mp4`` — both the English
 ``_en`` and Indonesian ``_id`` variants), groups them by pattern, and uploads
-the ones the ledger says are NOT yet posted — to TikTok and Instagram.
+the ones the ledger says are NOT yet posted. Platforms: tiktok, instagram,
+youtube. The default is ``tiktok,instagram`` (youtube is opt-in via --platforms;
+note the batch only handles portrait Shorts — landscape YouTube stays manual).
 
 Designed to be run unattended (cron, 3x/day): it auto-posts and, by default,
 publishes ONE pattern (its ``_en`` + ``_id``) per platform per run, so the
@@ -12,9 +14,10 @@ are skipped via the per-platform ledger, so re-runs never double-post.
 Each video uses its sibling ``<name>.txt`` as the caption and ``<name>.png`` as
 the cover (auto-detected by the uploader).
 
-  ./venv/bin/python batch_upload.py                       # 1 pattern, both platforms, auto-post
+  ./venv/bin/python batch_upload.py                       # 1 pattern, tiktok+instagram, auto-post
   ./venv/bin/python batch_upload.py --limit 3             # 3 patterns this run
   ./venv/bin/python batch_upload.py --platforms tiktok    # one platform only
+  ./venv/bin/python batch_upload.py --platforms youtube   # YouTube only (opt-in)
   ./venv/bin/python batch_upload.py --dry-run             # show what WOULD upload
   ./venv/bin/python batch_upload.py --no-post             # stop at Post/Share (manual click)
 """
@@ -26,14 +29,14 @@ import time
 from pathlib import Path
 
 from uploader import (
-    Settings, Ledger, TikTokUploader, InstagramUploader,
+    Settings, Ledger, TikTokUploader, InstagramUploader, YouTubeUploader,
     UploadSkipped, AlreadyUploaded, LoginRequired,
 )
 
 DEFAULT_DIR = "/home/alfa/pCloudDrive/target"
 LANGS = ("en", "id")          # variant suffixes that share a pattern
-PLATFORMS = ("tiktok", "instagram")
-IG_CDP_PORT = 9222
+PLATFORMS = ("tiktok", "instagram", "youtube")
+CDP_PORT = 9222               # shared by the IG/YT attach-over-CDP runs (they're sequential)
 
 
 def _file_date(path: Path) -> float:
@@ -140,10 +143,10 @@ def run_instagram(selected, auto_post, force):
         print(f"  [instagram] no profile at {profile} — run ./init_instagram_profile.sh", flush=True)
         return [(v.name, "LOGIN-REQUIRED (no profile)") for v in todo]
 
-    print(f"  [instagram] launching real Chrome on {profile} (CDP :{IG_CDP_PORT}) ...", flush=True)
+    print(f"  [instagram] launching real Chrome on {profile} (CDP :{CDP_PORT}) ...", flush=True)
     results = []
     try:
-        cdp_url = launch_with_cdp(profile, port=IG_CDP_PORT, url="https://www.instagram.com/")
+        cdp_url = launch_with_cdp(profile, port=CDP_PORT, url="https://www.instagram.com/")
         settings = Settings(cdp_url=cdp_url, auto_post=auto_post)
         for video in todo:
             up = InstagramUploader(settings=settings)
@@ -158,11 +161,46 @@ def run_instagram(selected, auto_post, force):
     return results
 
 
+def run_youtube(selected, auto_post, force):
+    # Same attach-over-CDP shape as Instagram, but profiles/youtube + YouTubeUploader.
+    # NB: batch only scans portrait Shorts — landscape YouTube uploads stay manual.
+    todo = [
+        variants[lang] for _key, variants in selected for lang in sorted(variants)
+        if force or not Ledger(Settings().ledger_path).is_uploaded(variants[lang], "youtube")
+    ]
+    if not todo:
+        print("  [youtube] nothing pending.", flush=True)
+        return []
+
+    from uploader.real_chrome import launch_with_cdp
+    profile = Settings().profiles_dir / "youtube"
+    if not profile.exists():
+        print(f"  [youtube] no profile at {profile} — run ./init_youtube_profile.sh", flush=True)
+        return [(v.name, "LOGIN-REQUIRED (no profile)") for v in todo]
+
+    print(f"  [youtube] launching real Chrome on {profile} (CDP :{CDP_PORT}) ...", flush=True)
+    results = []
+    try:
+        cdp_url = launch_with_cdp(profile, port=CDP_PORT, url="https://studio.youtube.com/")
+        settings = Settings(cdp_url=cdp_url, auto_post=auto_post)
+        for video in todo:
+            up = YouTubeUploader(settings=settings)
+            status = upload_one(up, video, force)
+            results.append((video.name, status))
+            print(f"  [youtube] {video.name}: {status}", flush=True)
+    finally:
+        subprocess.run(["pkill", "-f", str(profile.resolve())],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
+    return results
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Batch-upload portrait videos to TikTok + Instagram.")
+    ap = argparse.ArgumentParser(description="Batch-upload portrait videos to TikTok / Instagram / YouTube.")
     ap.add_argument("--dir", default=DEFAULT_DIR, help=f"folder to scan (default {DEFAULT_DIR})")
     ap.add_argument("--platforms", default="tiktok,instagram",
-                    help="comma list: tiktok,instagram (default both)")
+                    help="comma list from tiktok,instagram,youtube (default 'tiktok,instagram'; "
+                         "youtube is opt-in, e.g. --platforms youtube)")
     ap.add_argument("--limit", type=int, default=1,
                     help="max patterns (each = en+id) to upload this run; 0 = no limit (default 1)")
     ap.add_argument("--order", choices=["created", "created-desc", "name"], default="created",
@@ -214,6 +252,9 @@ def main():
     if "instagram" in platforms:
         print("\n-- Instagram --", flush=True)
         summary["instagram"] = run_instagram(selected, auto_post, args.force)
+    if "youtube" in platforms:
+        print("\n-- YouTube --", flush=True)
+        summary["youtube"] = run_youtube(selected, auto_post, args.force)
 
     print("\n== summary ==", flush=True)
     for platform, rows in summary.items():

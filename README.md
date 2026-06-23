@@ -519,8 +519,14 @@ plus a mocked-browser success path that records to the ledger).
 [`batch_upload.py`](batch_upload.py) uploads a whole folder, unattended. It scans
 `--dir` (default `/home/alfa/pCloudDrive/target`) for `*_portrait_*.mp4`, groups
 each pattern's **`_en` + `_id`** variants together, and uploads the ones the ledger
-says aren't posted yet — to **both TikTok and Instagram**. Each video uses its
-sibling `.txt` as the caption and `.png` as the cover (auto-detected).
+says aren't posted yet. Each video uses its sibling `.txt` as the caption and `.png`
+as the cover (auto-detected).
+
+**Platforms** (`--platforms`, comma list): `tiktok`, `instagram`, `youtube`. The
+default is **`tiktok,instagram`** — **YouTube is opt-in** (`--platforms youtube`),
+and the batch only does **portrait Shorts**, so landscape YouTube uploads stay
+manual (§17.2). Run a single platform with e.g. `--platforms tiktok` /
+`--platforms youtube`.
 
 It **auto-posts** by default (cron can't click for you) and, by default, publishes
 **one pattern per run** (`--limit 1`) so a backlog drains as a steady, detection-
@@ -535,19 +541,27 @@ isn't available on the pCloud FUSE mount, so mtime is used there. Use
 
 ```bash
 ./batch_upload.sh --dry-run                  # show what the next run WOULD post (with dates)
-./batch_upload.sh                            # 1 pattern (en+id) → both platforms, auto-post
+./batch_upload.sh                            # 1 pattern (en+id) → tiktok+instagram, auto-post
 ./batch_upload.sh --limit 3                  # 3 patterns this run
+
+# --- one platform only ---
+./batch_upload.sh --platforms tiktok         # TikTok only
+./batch_upload.sh --platforms instagram      # Instagram only
+./batch_upload.sh --platforms youtube        # YouTube only (opt-in; portrait Shorts)
+./batch_upload.sh --platforms tiktok,youtube # any combo
+
+# --- other knobs ---
 ./batch_upload.sh --order created-desc       # newest videos first
 ./batch_upload.sh --order name               # alphabetical (old behaviour)
-./batch_upload.sh --platforms tiktok         # one platform only
 ./batch_upload.sh --no-post                  # stop at Post/Share for a manual click (NOT recorded)
 ./batch_upload.sh --force                    # ignore the ledger (intentional re-upload)
 ```
 
-Per run it does the TikTok uploads first (each in its own stealth Chrome), then
-launches the real Chrome once over CDP for the Instagram uploads and **kills it
-afterward** so the next run starts clean. One video failing doesn't abort the rest;
-a summary prints at the end.
+Per run it does the TikTok uploads first (each in its own stealth Chrome), then —
+for Instagram and YouTube — launches the real Chrome once over CDP, uploads, and
+**kills it afterward** so the next platform/run starts clean (IG and YT run
+sequentially, sharing the CDP port). One video failing doesn't abort the rest; a
+summary prints at the end.
 
 ### 15.1 The cron wrapper
 
