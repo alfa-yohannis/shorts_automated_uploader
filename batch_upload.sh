@@ -39,11 +39,13 @@ if [ ! -x ./venv/bin/python ]; then
     exit 1
 fi
 
-# Single-instance guard: don't let an 11:00 run start if 05:00 is somehow still going.
-LOCK="/tmp/shorts_batch_upload.lock"
+# Single-instance guard, PER ARGS: don't let an 11:00 run start if 05:00 is still
+# going — but keyed on the args so separate cron entries (e.g. --platforms tiktok
+# vs --platforms instagram) get independent locks and never block each other.
+LOCK="/tmp/shorts_batch_upload$(printf '%s' "$*" | tr -cs 'a-zA-Z0-9' '_').lock"
 exec 9>"$LOCK"
 if ! flock -n 9; then
-    echo "Another batch_upload run is in progress (lock held) — skipping this trigger." >&2
+    echo "Another '$*' run is in progress (lock held) — skipping this trigger." >&2
     exit 0
 fi
 

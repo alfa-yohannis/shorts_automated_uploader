@@ -3,8 +3,10 @@
 Scans a folder for portrait videos (``*_portrait_*.mp4`` — both the English
 ``_en`` and Indonesian ``_id`` variants), groups them by pattern, and uploads
 the ones the ledger says are NOT yet posted. Platforms: tiktok, instagram,
-youtube. The default is ``tiktok,instagram`` (youtube is opt-in via --platforms;
-note the batch only handles portrait Shorts — landscape YouTube stays manual).
+youtube. The default is ``tiktok,instagram`` (youtube is opt-in via --platforms).
+TikTok/Instagram are Shorts-only (portrait); **youtube also uploads the landscape
+versions**, so a YouTube run does up to 4 videos per pattern (portrait+landscape ×
+en/id) while tiktok/instagram do 2 (portrait en/id).
 
 Designed to be run unattended (cron, 3x/day): it auto-posts and, by default,
 publishes ONE pattern (its ``_en`` + ``_id``) per platform per run, so the
@@ -161,13 +163,30 @@ def run_instagram(selected, auto_post, force):
     return results
 
 
+def _youtube_variants(portrait_video: Path):
+    """A portrait video + its landscape sibling — YouTube takes BOTH orientations
+    (TikTok/IG are Shorts-only). Landscape is the same name with portrait->landscape."""
+    vids = [portrait_video]
+    if "_portrait_" in portrait_video.name:
+        land = portrait_video.with_name(portrait_video.name.replace("_portrait_", "_landscape_"))
+        if land.exists():
+            vids.append(land)
+    return vids
+
+
 def run_youtube(selected, auto_post, force):
     # Same attach-over-CDP shape as Instagram, but profiles/youtube + YouTubeUploader.
-    # NB: batch only scans portrait Shorts — landscape YouTube uploads stay manual.
-    todo = [
-        variants[lang] for _key, variants in selected for lang in sorted(variants)
-        if force or not Ledger(Settings().ledger_path).is_uploaded(variants[lang], "youtube")
-    ]
+    # For each selected pattern, upload all 4 variants: portrait + landscape × en/id.
+    led = Ledger(Settings().ledger_path)
+    todo, seen = [], set()
+    for _key, variants in selected:
+        for lang in sorted(variants):
+            for v in _youtube_variants(variants[lang]):
+                if v in seen:
+                    continue
+                seen.add(v)
+                if force or not led.is_uploaded(v, "youtube"):
+                    todo.append(v)
     if not todo:
         print("  [youtube] nothing pending.", flush=True)
         return []

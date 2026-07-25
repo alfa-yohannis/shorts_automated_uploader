@@ -90,31 +90,50 @@ class TikTokUploader(VideoUploader):
             print(f"AI toggle failed ({e}); set it by hand.", flush=True)
 
     def _set_cover(self, page, cover: Path):
-        """Open Edit cover, upload the image, confirm."""
-        try:
-            page.locator("text=Edit cover").first.click(timeout=15000)
-            page.wait_for_selector('input[accept*="image"]', state="attached", timeout=15000)
-            page.set_input_files('input[accept*="image"]', str(cover))
-            print("Cover image uploaded into editor, rendering...", flush=True)
-            page.wait_for_timeout(5000)
+        """Wait for the video upload to finish, then POLL the cover editor until it's
+        actually ready — (re)open Edit cover and retry setting the image until the
+        editor's image input appears and accepts the file. The editor errors if opened
+        before the upload's frames are extracted, so a fixed wait was unreliable."""
+        if self._wait_post_enabled(page, 60000):        # up to 1 min for the upload
+            print("Video finished uploading; opening the cover editor...", flush=True)
+        else:
+            print("Video still uploading after 1 min; trying the cover anyway.", flush=True)
 
-            for name in ["Confirm", "Save", "Done", "Apply", "Set as cover", "OK"]:
-                btn = page.get_by_role("button", name=name)
-                if btn.count() and btn.first.is_visible():
-                    btn.first.click()
-                    print(f"Cover confirmed via '{name}'.", flush=True)
-                    return
-            # dump visible modal buttons so we can learn the right label
-            names = page.evaluate(
-                """() => [...document.querySelectorAll('button')]
-                       .filter(b => b.offsetParent)
-                       .map(b => (b.innerText||'').trim()).filter(Boolean).slice(0,20)"""
-            )
-            print(f"No known confirm button. Visible buttons: {names}", flush=True)
-            print("Confirm the cover by hand in the window.", flush=True)
-            page.wait_for_timeout(2000)
-        except Exception as e:
-            print(f"Cover step failed ({e}); set it by hand in the window.", flush=True)
+        deadline = time.time() + 150                    # poll ~2.5 min for the editor to be ready
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            try:
+                # (re)open the editor unless its image input is already present
+                if not page.locator('input[accept*="image"]').count():
+                    page.locator("text=Edit cover").first.click(timeout=10000)
+                page.wait_for_selector('input[accept*="image"]', state="attached", timeout=8000)
+                page.set_input_files('input[accept*="image"]', str(cover))
+                print(f"Cover image loaded (attempt {attempt}); rendering...", flush=True)
+                page.wait_for_timeout(5000)
+
+                for name in ["Confirm", "Save", "Done", "Apply", "Set as cover", "OK"]:
+                    btn = page.get_by_role("button", name=name)
+                    if btn.count() and btn.first.is_visible():
+                        btn.first.click()
+                        print(f"Cover confirmed via '{name}'.", flush=True)
+                        return
+                names = page.evaluate(
+                    """() => [...document.querySelectorAll('button')]
+                           .filter(b => b.offsetParent)
+                           .map(b => (b.innerText||'').trim()).filter(Boolean).slice(0,20)"""
+                )
+                print(f"No known confirm button. Visible buttons: {names}", flush=True)
+                print("Confirm the cover by hand in the window.", flush=True)
+                return
+            except Exception as e:
+                print(f"Cover editor not ready (attempt {attempt}: {e}); retrying in 8s...", flush=True)
+                try:
+                    page.keyboard.press("Escape")       # close a half-open modal for a clean retry
+                except Exception:
+                    pass
+                page.wait_for_timeout(8000)
+        print("Cover editor never became ready; set it by hand.", flush=True)
 
     # Text that confirms a post went through.
     _SUCCESS_TEXTS = ["being uploaded", "Manage posts", "uploaded to TikTok",

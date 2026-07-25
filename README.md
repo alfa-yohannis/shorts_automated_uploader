@@ -523,10 +523,11 @@ says aren't posted yet. Each video uses its sibling `.txt` as the caption and `.
 as the cover (auto-detected).
 
 **Platforms** (`--platforms`, comma list): `tiktok`, `instagram`, `youtube`. The
-default is **`tiktok,instagram`** — **YouTube is opt-in** (`--platforms youtube`),
-and the batch only does **portrait Shorts**, so landscape YouTube uploads stay
-manual (§17.2). Run a single platform with e.g. `--platforms tiktok` /
-`--platforms youtube`.
+default is **`tiktok,instagram`** — **YouTube is opt-in** (`--platforms youtube`).
+TikTok/Instagram are **Shorts-only** (portrait `_en`+`_id` = 2 videos/pattern);
+**YouTube also uploads the landscape versions**, so a YouTube run does up to **4
+videos/pattern** (portrait+landscape × en/id). Run a single platform with e.g.
+`--platforms tiktok` / `--platforms youtube`.
 
 It **auto-posts** by default (cron can't click for you) and, by default, publishes
 **one pattern per run** (`--limit 1`) so a backlog drains as a steady, detection-
@@ -547,7 +548,7 @@ isn't available on the pCloud FUSE mount, so mtime is used there. Use
 # --- one platform only ---
 ./batch_upload.sh --platforms tiktok         # TikTok only
 ./batch_upload.sh --platforms instagram      # Instagram only
-./batch_upload.sh --platforms youtube        # YouTube only (opt-in; portrait Shorts)
+./batch_upload.sh --platforms youtube        # YouTube only (opt-in; portrait + landscape = 4/pattern)
 ./batch_upload.sh --platforms tiktok,youtube # any combo
 
 # --- other knobs ---
@@ -572,8 +573,9 @@ environment — so run it through [`batch_upload.sh`](batch_upload.sh), which:
 - sets `XDG_RUNTIME_DIR` + `DBUS_SESSION_BUS_ADDRESS` (`/run/user/<uid>/bus`) so
   Chrome can reach the **keyring** and decrypt Instagram's session — see §15.3;
 - logs to `logs/cron.log`;
-- holds an `flock` single-instance lock so an 11:00 run can't collide with a 05:00
-  run that's still going.
+- holds an `flock` single-instance lock **keyed on the args**, so a run can't collide
+  with an earlier one still going — yet separate entries (`--platforms tiktok` vs
+  `--platforms instagram`) get independent locks and never block each other.
 
 ### 15.3 Instagram under cron (the keyring gotcha)
 
@@ -600,20 +602,23 @@ then anyway). TikTok keeps working regardless.
 
 Any extra args pass straight through to `batch_upload.py`.
 
-### 15.2 Schedule (5am / 11am / 5pm)
+### 15.2 Schedule
 
-Installed via `crontab -e`:
+Installed via `crontab -e`. **Each platform is its own entry**, staggered 10 min so
+two Chrome windows don't fight (and their per-args locks are independent):
 
 ```cron
-0 5,11,17 * * * DISPLAY=:0.0 XAUTHORITY=/home/alfa/.Xauthority /home/alfa/projects/shorts_automated_uploader/batch_upload.sh --limit 1 >> /home/alfa/projects/shorts_automated_uploader/logs/cron.log 2>&1
+# TikTok 6:00, Instagram 6:10, YouTube 6:20 (daily)
+0  6 * * * DISPLAY=:0.0 XAUTHORITY=/home/alfa/.Xauthority /home/alfa/projects/shorts_automated_uploader/batch_upload.sh --limit 1 --platforms tiktok    >> /home/alfa/projects/shorts_automated_uploader/logs/cron.log 2>&1
+10 6 * * * DISPLAY=:0.0 XAUTHORITY=/home/alfa/.Xauthority /home/alfa/projects/shorts_automated_uploader/batch_upload.sh --limit 1 --platforms instagram >> /home/alfa/projects/shorts_automated_uploader/logs/cron.log 2>&1
+20 6 * * * DISPLAY=:0.0 XAUTHORITY=/home/alfa/.Xauthority /home/alfa/projects/shorts_automated_uploader/batch_upload.sh --limit 1 --platforms youtube   >> /home/alfa/projects/shorts_automated_uploader/logs/cron.log 2>&1
 ```
 
-`--limit 1` is explicit here even though it's also the default — so the per-run
-count survives any future change to the default in `batch_upload.py`.
-
-With `--limit 1`, that posts up to **3 patterns/day** to each platform. Watch a run
-live with `tail -f logs/cron.log`, or trigger one supervised by hand:
-`DISPLAY=:0 ./batch_upload.sh --limit 1`.
+`--limit 1` is explicit even though it's also the default. **All three auto-post** —
+YouTube's line **publishes all 4 versions** (portrait+landscape × en/id) of the pattern;
+add `--no-post` to that line to stage drafts instead. Adjust times/frequency to taste
+(e.g. `0 5,11,17` for 3×/day). Watch live with `tail -f logs/cron.log`, or trigger
+supervised: `DISPLAY=:0 ./batch_upload.sh --limit 1 --platforms youtube`.
 
 ---
 
@@ -717,16 +722,26 @@ DISPLAY=:0 ./venv/bin/python upload_youtube.py \
 
 ### 17.3 Caption → metadata
 
-The `.txt` uses marker lines; the uploader parses them into the right fields:
+The `.txt` maps to title / description / tags in one of two layouts.
+
+**Preferred — blank-line layout** (no markers): the **title** is everything before the
+FIRST blank line, the **keywords** are everything after the LAST blank line, and the
+**description** is everything in between (hashtags included):
 ```
-TITLE
-<the title>                 → video title (≤100 chars)
-DESCRIPTION
-<body + #hashtags>          → description
-KEYWORDS
-<comma, separated, list>    → tags
+TOGAF Phase C Application Architecture: …        ← title (before the first blank line)
+
+Phase C of the TOGAF ADM designs the software…   ← description
+…
+#TOGAF #EnterpriseArchitecture #ADM              ← (hashtags stay in the description)
+
+TOGAF, Phase C, ADM, Gap analysis, Roadmap, …    ← keywords (after the last blank line) → tags
 ```
-Also set automatically per video:
+
+**Also supported — marker layout**: explicit `TITLE` / `DESCRIPTION` / `KEYWORDS` header
+lines introduce each block (tried first when those markers are present).
+
+Title is capped at 100 chars; keywords are split on commas into tags. Also set
+automatically per video:
 - **Audience**: *not made for kids* (override with `--made-for-kids`).
 - **Altered content / AI use**: *No* — it lives **below "Show more"**, which the uploader
   expands before setting it (and the audience/altered radios).

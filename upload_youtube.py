@@ -11,7 +11,8 @@ Drive your real, logged-in Chrome (Google bot-detects automated logins):
   # or attach to a Chrome you started yourself with --remote-debugging-port
   ./venv/bin/python upload_youtube.py <video.mp4> ... --cdp http://127.0.0.1:9222
 
-Caption -> the first line becomes the title, the whole text the description.
+Caption .txt -> first line = title, last line = keywords (comma-separated),
+everything in between = description.
 --post publishes automatically; otherwise it stops on the Visibility step for you.
 Thin CLI shim over uploader.YouTubeUploader.
 """

@@ -12,13 +12,13 @@ exactly like Instagram. profiles/youtube/ holds the session.
 
 Unlike TikTok/IG this also takes LANDSCAPE videos, not just portrait Shorts.
 
-Caption .txt layout (markers on their own lines) drives the metadata:
-    TITLE
-    <the title>                 -> video title (<=100 chars)
-    DESCRIPTION
-    <body + #hashtags>          -> description
-    KEYWORDS
-    <comma, separated, list>    -> tags
+Caption .txt layout — positional (preferred, no markers needed):
+    <first line>                -> video title (<=100 chars)
+    <everything in between>     -> description (body + #hashtags)
+    <last line>                 -> keywords (comma-separated tags)
+
+Alternatively, use explicit markers on their own lines:
+    TITLE / DESCRIPTION / KEYWORDS
 
 Also set per video: audience = NOT made for kids; video language from the file
 suffix (``_en`` -> English, ``_id`` -> Indonesian); recording date = today;
@@ -236,11 +236,11 @@ class YouTubeUploader(VideoUploader):
                     print(f"Related video set: {title[:45]}", flush=True)
                     return
             print("No related candidate found on the channel; closing picker.", flush=True)
-            page.keyboard.press("Escape")
+            self._close_overlay(page)
         except Exception as e:
             print(f"Related-video step skipped ({e}).", flush=True)
             try:
-                page.keyboard.press("Escape")
+                self._close_overlay(page)
             except Exception:
                 pass
 
@@ -289,20 +289,68 @@ class YouTubeUploader(VideoUploader):
             box.first.scroll_into_view_if_needed(timeout=5000)
             box.first.click(timeout=8000)
             page.keyboard.insert_text(", ".join(tags)[:480] + ",")   # trailing comma commits the last tag
-            page.keyboard.press("Escape")          # close the tag-suggestion overlay (it blocks later dropdowns)
-            page.wait_for_timeout(600)
+            # Dismiss the tag-suggestion overlay by moving focus, NOT with Escape:
+            # inside a modal, Escape tells the whole upload dialog to CLOSE — the
+            # dialog then tears down/re-renders, its `dialog-scrim` covers everything,
+            # and every later step ("intercepts pointer events" / "element was
+            # detached from the DOM") fails. Tab just leaves the field.
+            box.first.press("Tab")
+            page.wait_for_timeout(800)
             print(f"Tags set ({len(tags)}).", flush=True)
         except Exception as e:
             print(f"Tags step skipped ({e}).", flush=True)
 
+    @staticmethod
+    def _close_overlay(page):
+        """Close an open dropdown menu / picker with Escape — but ONLY if one is
+        actually open. A stray Escape inside the modal tells the whole upload dialog
+        to close, which tears it down and breaks every step after it."""
+        try:
+            open_overlay = page.evaluate(
+                """() => { const vis = e => e && e.offsetParent !== null;
+                     return [...document.querySelectorAll(
+                       'tp-yt-iron-dropdown, tp-yt-paper-dialog, ytcp-video-pick-dialog, '
+                       + 'tp-yt-iron-overlay-backdrop')].some(vis); }"""
+            )
+            if open_overlay:
+                self._close_overlay(page)
+                page.wait_for_timeout(400)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _scope(page):
+        """Search INSIDE the upload dialog when it's open. Studio keeps a second copy
+        of these controls on the page behind the dialog; picking that one means the
+        click is swallowed by the dialog's `dialog-scrim` overlay ("intercepts pointer
+        events") and every later step fails."""
+        try:
+            dlg = page.locator("ytcp-uploads-dialog")
+            if dlg.count() and dlg.first.is_visible():
+                return dlg.first
+        except Exception:
+            pass
+        return page
+
+    def _dropdown_trigger(self, page, label: str):
+        """The visible dropdown trigger for `label`, scoped to the upload dialog."""
+        trig = self._scope(page).locator(self._DROPDOWN).filter(has_text=label)
+        for i in range(trig.count()):
+            try:
+                if trig.nth(i).is_visible():
+                    return trig.nth(i)
+            except Exception:
+                continue
+        return None
+
     def _select_dropdown(self, page, label: str, option: str, exact_option: bool = True) -> bool:
         """Open the Studio dropdown whose trigger contains `label`, click `option`."""
         try:
-            trig = page.locator(self._DROPDOWN).filter(has_text=label)
-            if not trig.count():
+            trig = self._dropdown_trigger(page, label)
+            if trig is None:
                 return False
-            trig.first.scroll_into_view_if_needed(timeout=5000)
-            trig.first.click(timeout=8000)
+            trig.scroll_into_view_if_needed(timeout=5000)
+            trig.click(timeout=8000)
             page.wait_for_timeout(1200)            # let the option menu render
             opt = page.get_by_text(option, exact=exact_option)
             if not opt.count():
@@ -311,11 +359,11 @@ class YouTubeUploader(VideoUploader):
                 opt.first.click()
                 page.wait_for_timeout(500)
                 return True
-            page.keyboard.press("Escape")
+            self._close_overlay(page)
             return False
         except Exception:
             try:
-                page.keyboard.press("Escape")
+                self._close_overlay(page)
             except Exception:
                 pass
             return False
@@ -328,15 +376,15 @@ class YouTubeUploader(VideoUploader):
         if not language:
             return
         try:
-            trig = page.locator(self._DROPDOWN).filter(has_text="Video language")
-            if not trig.count():
+            trig = self._dropdown_trigger(page, "Video language")
+            if trig is None:
                 print("Language dropdown not found; set it by hand.", flush=True); return
             for _ in range(4):
                 ab = page.get_by_text("Abkhazian", exact=True)
                 if ab.count() and ab.first.is_visible():
                     break                                 # menu genuinely OPEN (items keep
-                trig.first.scroll_into_view_if_needed(timeout=5000)   # living in the DOM when
-                trig.first.click(timeout=8000)                        # closed, so count() lies)
+                trig.scroll_into_view_if_needed(timeout=5000)         # living in the DOM when
+                trig.click(timeout=8000)                              # closed, so count() lies)
                 page.wait_for_timeout(1800)
             # exact-text item, so "English" doesn't match "English (UK)" etc. It's in
             # the DOM but usually scrolled off-screen — scroll it in, then click.
@@ -359,11 +407,11 @@ class YouTubeUploader(VideoUploader):
                 print(f"Language set: {language}.", flush=True)
             else:
                 print(f"Language '{language}' option not found; set it by hand.", flush=True)
-                page.keyboard.press("Escape")
+                self._close_overlay(page)
         except Exception as e:
             print(f"Language step skipped ({e}); set it by hand.", flush=True)
             try:
-                page.keyboard.press("Escape")
+                self._close_overlay(page)
             except Exception:
                 pass
 
@@ -396,7 +444,7 @@ class YouTubeUploader(VideoUploader):
                 print(f"Recording date set: {today.isoformat()}.", flush=True)
             else:
                 print("Recording-date input not found; skipping.", flush=True)
-                page.keyboard.press("Escape")
+                self._close_overlay(page)
         except Exception as e:
             print(f"Recording-date step skipped ({e}).", flush=True)
 
@@ -420,16 +468,52 @@ class YouTubeUploader(VideoUploader):
         # Publishing while checks are still running pops a strike-risk warning;
         # wait for "Checks complete" first to avoid it.
         self._wait_for_checks(page, 120000)
-        if self._click_first(page, self._DONE_BTN, timeout=20000):
-            print("Clicked Publish; confirming 'Publish anyway' if prompted...", flush=True)
-            page.wait_for_timeout(1500)
-            b = page.get_by_role("button", name="Publish anyway", exact=True)
-            if b.count() and b.first.is_visible():
-                b.first.click()
-                print("Confirmed 'Publish anyway'.", flush=True)
+        if self._click_publish(page):
+            print("Clicked Publish; waiting for confirmation...", flush=True)
         else:
-            print("Publish button not found; click it by hand.", flush=True)
-        return self._wait_for_success(page, 120000)
+            print("Publish button never became clickable; click it by hand.", flush=True)
+        return self._wait_for_success(page, 120000, confirm=True)
+
+    def _click_publish(self, page, timeout_ms: int = 90000) -> bool:
+        """Click Publish, retrying until it works. The button is often present but
+        still DISABLED (upload/checks finishing), so a single click attempt silently
+        failed and left the video as a draft — the main intermittent failure."""
+        deadline = time.time() + timeout_ms / 1000
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            try:
+                btn = page.locator(self._DONE_BTN).first
+                if btn.count() and btn.is_visible() \
+                        and btn.get_attribute("aria-disabled") != "true":
+                    btn.click(timeout=8000)
+                    return True
+                # fall back to the button's text (Publish / Save / Done)
+                for name in ("Publish", "Save", "Done"):
+                    b = page.get_by_role("button", name=name, exact=True)
+                    if b.count() and b.first.is_visible() \
+                            and b.first.get_attribute("aria-disabled") != "true":
+                        b.first.click(timeout=8000)
+                        return True
+            except Exception as e:
+                if attempt == 1:
+                    print(f"Publish click retrying ({e})...", flush=True)
+            page.wait_for_timeout(3000)
+        return False
+
+    def _confirm_publish_dialog(self, page) -> bool:
+        """Click through the post-Publish dialogs YouTube may raise (the
+        'still checking your content' strike warning, etc.)."""
+        for name in ("Publish anyway", "Publish", "Continue", "Got it"):
+            try:
+                b = page.get_by_role("button", name=name, exact=True)
+                if b.count() and b.first.is_visible():
+                    b.first.click(timeout=5000)
+                    print(f"Confirmed dialog: '{name}'.", flush=True)
+                    return True
+            except Exception:
+                pass
+        return False
 
     def _wait_for_checks(self, page, timeout_ms: int) -> bool:
         """Wait until upload checks finish ('Checks complete') so publishing doesn't
@@ -463,27 +547,71 @@ class YouTubeUploader(VideoUploader):
 
     @staticmethod
     def _parse_caption(caption: str):
-        """Parse the TITLE / DESCRIPTION / KEYWORDS .txt layout into
-        (title<=100, description, [tags]). Falls back to first-line title +
-        whole-text description when the markers are absent."""
+        """Parse the caption text into (title<=100, description, [tags]).
+
+        Two supported layouts:
+
+        1. Marker-based (explicit section headers on their own lines)::
+
+               TITLE
+               <the title>
+               DESCRIPTION
+               <body + #hashtags>
+               KEYWORDS
+               <comma, separated, list>
+
+        2. Positional (no markers) — the simpler, preferred format::
+
+               <title — everything before the FIRST blank line>
+
+               <description — everything between>
+
+               <keywords — everything after the LAST blank line, comma-separated>
+
+        The marker-based path is tried first; positional is used when none of
+        the three markers are found in the text.
+        """
         buckets = {"TITLE": [], "DESCRIPTION": [], "KEYWORDS": []}
         section = None
+        has_markers = False
         for ln in caption.splitlines():
             key = ln.strip().upper()
             if key in buckets:
                 section = key
+                has_markers = True
                 continue
             if section:
                 buckets[section].append(ln)
-        title = " ".join(l.strip() for l in buckets["TITLE"] if l.strip())[:100]
-        desc = "\n".join(buckets["DESCRIPTION"]).strip()
-        kw = " ".join(l.strip() for l in buckets["KEYWORDS"] if l.strip())
-        tags = [t.strip() for t in kw.split(",") if t.strip()]
+
+        if has_markers:
+            # --- marker-based path ---
+            title = " ".join(l.strip() for l in buckets["TITLE"] if l.strip())[:100]
+            desc = "\n".join(buckets["DESCRIPTION"]).strip()
+            kw = " ".join(l.strip() for l in buckets["KEYWORDS"] if l.strip())
+            tags = [t.strip() for t in kw.split(",") if t.strip()]
+            if not title:
+                title = "Untitled"
+            return title, desc, tags
+
+        # --- positional (blank-line) layout ---
+        # title = text before the FIRST blank line; keywords = text after the LAST
+        # blank line; description = everything in between.
+        lines = caption.strip("\n").split("\n")
+        blanks = [i for i, l in enumerate(lines) if not l.strip()]
+        if not blanks:                                  # no blank line: it's all title
+            title = " ".join(l.strip() for l in lines if l.strip())[:100] or "Untitled"
+            return title, "", []
+        first, last = blanks[0], blanks[-1]
+        title = " ".join(l.strip() for l in lines[:first] if l.strip())[:100]
+        if last > first:                                # title | description | keywords
+            desc = "\n".join(lines[first + 1:last]).strip()
+            kw = "\n".join(lines[last + 1:]).strip()
+        else:                                           # only one blank line: title | description
+            desc = "\n".join(lines[first + 1:]).strip()
+            kw = ""
+        tags = [t.strip() for t in kw.replace("\n", ",").split(",") if t.strip()]
         if not title:
-            first = next((l.strip() for l in caption.splitlines() if l.strip()), "")
-            title = first[:100] or "Untitled"
-        if not desc:
-            desc = caption.strip()
+            title = (next((l.strip() for l in lines if l.strip()), "")[:100]) or "Untitled"
         return title, desc, tags
 
     @staticmethod
@@ -500,10 +628,20 @@ class YouTubeUploader(VideoUploader):
         try:
             box = page.locator(selector_csv).first
             box.click(timeout=15000)
-            page.keyboard.press("Control+A")
-            page.keyboard.press("Delete")
+            # Clear via the ELEMENT: locator.press() focuses it first. A plain
+            # page.keyboard select-all can miss Studio's contenteditable, so Delete
+            # clears nothing and the new text is APPENDED onto YouTube's pre-filled
+            # value — which is what concatenates the title/description.
+            box.press("Control+a")
+            box.press("Delete")
             page.keyboard.insert_text(text)        # instant on long text, unlike .type()
-            print(f"{label} set.", flush=True)
+            page.wait_for_timeout(300)
+            got = (box.inner_text() or "").strip()
+            if got[:40].strip() != text[:40].strip():
+                print(f"{label} MISMATCH — box starts {got[:60]!r} (expected {text[:40]!r})",
+                      flush=True)
+            else:
+                print(f"{label} set.", flush=True)
         except Exception as e:
             print(f"{label} step failed ({e}); set it by hand.", flush=True)
 
@@ -532,13 +670,18 @@ class YouTubeUploader(VideoUploader):
             return True
         return False
 
-    def _wait_for_success(self, page, timeout_ms: int) -> bool:
+    def _wait_for_success(self, page, timeout_ms: int, confirm: bool = False) -> bool:
+        """Watch for a publish confirmation. With confirm=True also clicks any
+        post-Publish dialog (e.g. the 'still checking your content' warning), which
+        can appear seconds later and otherwise blocks the publish from completing."""
         deadline = time.time() + timeout_ms / 1000
         while time.time() < deadline:
             try:
                 for txt in self._SUCCESS_TEXTS:
                     if page.get_by_text(txt, exact=False).count():
                         return True
+                if confirm:
+                    self._confirm_publish_dialog(page)
             except Exception:
                 pass
             page.wait_for_timeout(1500)
