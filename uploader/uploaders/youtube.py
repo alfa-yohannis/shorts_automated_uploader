@@ -313,7 +313,7 @@ class YouTubeUploader(VideoUploader):
                        + 'tp-yt-iron-overlay-backdrop')].some(vis); }"""
             )
             if open_overlay:
-                self._close_overlay(page)
+                page.keyboard.press("Escape")
                 page.wait_for_timeout(400)
         except Exception:
             pass
