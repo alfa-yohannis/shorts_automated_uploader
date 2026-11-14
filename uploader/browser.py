@@ -13,6 +13,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
@@ -89,8 +90,14 @@ class StealthBrowser:
     def __enter__(self) -> "StealthBrowser":
         self._pw = sync_playwright().start()
         if self.attached:
-            # connect to the user's real Chrome; reuse its existing context
-            self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+            # connect to the user's real Chrome; reuse its existing context.
+            # is_local=True for a Chrome on this machine lets Playwright hand the
+            # file path to Chrome directly; otherwise uploads over 50 MB fail with
+            # "Cannot transfer files larger than 50Mb to a browser not co-located".
+            host = urlparse(self.cdp_url).hostname
+            is_local = host in ("127.0.0.1", "localhost", "::1")
+            self._browser = self._pw.chromium.connect_over_cdp(
+                self.cdp_url, is_local=is_local)
             self.context = (self._browser.contexts[0] if self._browser.contexts
                             else self._browser.new_context())
         else:
