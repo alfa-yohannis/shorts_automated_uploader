@@ -224,6 +224,9 @@ class YouTubeUploader(VideoUploader):
     # shows during the normal upload and would falsely report success before Publish.
     _SUCCESS_TEXTS = [
         "Video published", "Short published", "is now live", "published to your channel",
+        # a long video published before its SD version is ready gets a "Video
+        # processing" dialog instead; this sentence appears only after Publish
+        "before your video is public",
     ]
 
     # YouTube's wizard handles cover/audience/visibility itself, so override order.
