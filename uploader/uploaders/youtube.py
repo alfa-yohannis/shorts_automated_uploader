@@ -53,6 +53,69 @@ _ID = r"[0-9A-Za-z_-]{11}"
 _ID_IN_LINK = [rf"youtu\.be/({_ID})", rf"[?&]v=({_ID})", rf"/shorts/({_ID})", rf"/video/({_ID})"]
 
 
+#: youtube.txt headers: the three text blocks, then the upload settings that
+#: slides_narrator writes after KEYWORDS (one value line each).
+TEXT_HEADERS = ("TITLE", "DESCRIPTION", "KEYWORDS")
+SETTING_HEADERS = ("PLAYLIST", "LANGUAGE", "LICENSE", "VISIBILITY", "MADE_FOR_KIDS", "COVER")
+_VISIBILITIES = ("public", "unlisted", "private")
+_YES = ("yes", "true", "1")
+_NO = ("no", "false", "0")
+
+
+def parse_upload_fields(caption: str, base_dir: Path | None = None) -> dict:
+    """Upload settings from a youtube.txt's PLAYLIST / LANGUAGE / LICENSE / VISIBILITY
+    / MADE_FOR_KIDS / COVER blocks, as the keys playlist, language, license,
+    visibility, made_for_kids (bool) and cover (a Path resolved against `base_dir`).
+    A missing block is absent from the result; an invalid value is reported and
+    left out, so the caller falls back to its own default."""
+    values = {}
+    section = None
+    for line in caption.splitlines():
+        header = line.strip().upper()
+        if header in TEXT_HEADERS + SETTING_HEADERS:
+            section = header
+        elif section in SETTING_HEADERS and line.strip() and section not in values:
+            values[section] = line.strip()
+
+    fields = {}
+    if "PLAYLIST" in values:
+        fields["playlist"] = values["PLAYLIST"]
+    if "LANGUAGE" in values:
+        fields["language"] = values["LANGUAGE"]
+    if "LICENSE" in values:
+        key = values["LICENSE"].lower()
+        if key.startswith("creative"):
+            fields["license"] = "creative_commons"
+        elif key.startswith("standard"):
+            fields["license"] = "standard"
+        else:
+            print(f"youtube.txt LICENSE {values['LICENSE']!r} is neither creative_commons "
+                  "nor standard; ignored.", flush=True)
+    if "VISIBILITY" in values:
+        if values["VISIBILITY"].lower() in _VISIBILITIES:
+            fields["visibility"] = values["VISIBILITY"].lower()
+        else:
+            print(f"youtube.txt VISIBILITY {values['VISIBILITY']!r} is not one of "
+                  f"{', '.join(_VISIBILITIES)}; ignored.", flush=True)
+    if "MADE_FOR_KIDS" in values:
+        answer = values["MADE_FOR_KIDS"].lower()
+        if answer in _YES + _NO:
+            fields["made_for_kids"] = answer in _YES
+        else:
+            print(f"youtube.txt MADE_FOR_KIDS {values['MADE_FOR_KIDS']!r} is not yes/no; "
+                  "ignored.", flush=True)
+    if "COVER" in values:
+        cover = Path(values["COVER"]).expanduser()
+        if not cover.is_absolute() and base_dir is not None:
+            cover = Path(base_dir) / cover
+        if cover.exists():
+            fields["cover"] = cover
+        else:
+            print(f"youtube.txt COVER {values['COVER']!r} not found at {cover}; ignored.",
+                  flush=True)
+    return fields
+
+
 def parse_video_id(ref: str) -> str | None:
     """The video id in a bare id, a youtu.be / watch?v= / shorts/ link, or a Studio
     /video/<id>/ URL. Returns None when `ref` holds no id."""
@@ -790,9 +853,12 @@ class YouTubeUploader(VideoUploader):
                <keywords — everything after the LAST blank line, comma-separated>
 
         The marker-based path is tried first; positional is used when none of
-        the three markers are found in the text.
+        the markers are found in the text. The upload-setting blocks a
+        slides_narrator youtube.txt adds after KEYWORDS (PLAYLIST, LANGUAGE, ...)
+        are markers too, so their values never leak into the tags; they are read
+        by parse_upload_fields.
         """
-        buckets = {"TITLE": [], "DESCRIPTION": [], "KEYWORDS": []}
+        buckets = {header: [] for header in TEXT_HEADERS + SETTING_HEADERS}
         section = None
         has_markers = False
         for ln in caption.splitlines():

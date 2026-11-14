@@ -5,10 +5,13 @@ Drive your real, logged-in Chrome (Google bot-detects automated logins):
   # attach to a copy of your logged-in Chrome profile (recommended, like Instagram)
   ./venv/bin/python upload_youtube.py <video.mp4> [caption.txt|"caption"] [cover.png] --chrome
 
-  # a narrated lecture from slides_narrator: youtube.txt as the caption, the first
-  # slide (slides/slide_01.png) as the cover, into a playlist, in Indonesian
+  # a narrated lecture from slides_narrator: its youtube.txt carries the title,
+  # description, keywords and the upload settings (PLAYLIST, LANGUAGE, LICENSE,
+  # VISIBILITY, MADE_FOR_KIDS, COVER), so no other flags are needed
   ./venv/bin/python upload_youtube.py videos/session10/session10.mp4 \
-      videos/session10/youtube.txt --chrome --playlist "<playlist title>" --language Indonesian
+      videos/session10/youtube.txt --chrome --post
+
+A flag given on the command line overrides the matching youtube.txt setting.
 
   # or a persistent stealth profile you logged into once (python login.py youtube)
   ./venv/bin/python upload_youtube.py <video.mp4> [caption.txt|"caption"] [cover.png]
@@ -26,6 +29,7 @@ import sys
 from pathlib import Path
 
 from uploader import YouTubeUploader, Settings, UploadSkipped, AlreadyUploaded, LoginRequired
+from uploader.uploaders.youtube import parse_upload_fields
 
 
 def main():
@@ -41,17 +45,20 @@ def main():
     ap.add_argument("--port", type=int, default=9222, help="CDP port for --chrome (default 9222)")
     ap.add_argument("--post", action="store_true",
                     help="click Publish automatically (hands-off); otherwise it waits for you")
-    ap.add_argument("--visibility", choices=["public", "unlisted", "private"], default="public",
-                    help="video visibility on publish (default public)")
+    ap.add_argument("--visibility", choices=["public", "unlisted", "private"], default=None,
+                    help="video visibility on publish (default: youtube.txt VISIBILITY, else public)")
+    ap.add_argument("--license", choices=["creative_commons", "standard"], default=None,
+                    help="video license (default: youtube.txt LICENSE, else the configured one)")
     ap.add_argument("--made-for-kids", action="store_true",
                     help="mark the video as 'made for kids' (default: not made for kids)")
     ap.add_argument("--channel", default=Settings().yt_channel_id,
                     help="YouTube channel id to upload to (default: the configured channel)")
     ap.add_argument("--playlist", default=None,
-                    help="exact title of a playlist on the channel to add the video to")
+                    help="exact title of a playlist on the channel to add the video to "
+                         "(default: youtube.txt PLAYLIST)")
     ap.add_argument("--language", default=None,
                     help="video language as Studio lists it, e.g. Indonesian "
-                         "(default: from the _en/_id file suffix)")
+                         "(default: youtube.txt LANGUAGE, else the _en/_id file suffix)")
     args = ap.parse_args()
 
     video = Path(args.video).resolve()
@@ -72,12 +79,27 @@ def main():
         cdp_url = launch_with_cdp(profile, port=args.port, url=start_url)
         print(f"Attached at {cdp_url}", flush=True)
 
-    settings = Settings(cdp_url=cdp_url, auto_post=args.post, yt_channel_id=args.channel,
-                        yt_visibility=args.visibility, yt_made_for_kids=args.made_for_kids,
-                        yt_playlist=args.playlist, yt_language=args.language)
+    # youtube.txt may carry the upload settings; a command-line flag overrides them
+    caption = YouTubeUploader.resolve_caption(args.caption) if args.caption else ""
+    caption_dir = (Path(args.caption).resolve().parent
+                   if args.caption and Path(args.caption).is_file() else video.parent)
+    fields = parse_upload_fields(caption, caption_dir)
+    defaults = Settings()
+    settings = Settings(
+        cdp_url=cdp_url, auto_post=args.post, yt_channel_id=args.channel,
+        yt_visibility=args.visibility or fields.get("visibility", defaults.yt_visibility),
+        yt_made_for_kids=args.made_for_kids or fields.get("made_for_kids", defaults.yt_made_for_kids),
+        yt_playlist=args.playlist or fields.get("playlist"),
+        yt_language=args.language or fields.get("language"),
+        yt_license=args.license or fields.get("license", defaults.yt_license),
+    )
     uploader = YouTubeUploader(settings=settings)
-    caption = uploader.resolve_caption(args.caption) if args.caption else ""
-    cover = uploader.resolve_cover(video, args.cover)
+    cover_arg = args.cover or (str(fields["cover"]) if "cover" in fields else None)
+    cover = uploader.resolve_cover(video, cover_arg)
+    print(f"Upload settings: visibility={settings.yt_visibility}, "
+          f"playlist={settings.yt_playlist or '-'}, language={settings.yt_language or '-'}, "
+          f"license={settings.yt_license}, "
+          f"made_for_kids={'yes' if settings.yt_made_for_kids else 'no'}", flush=True)
     print(f"Thumbnail: {cover if cover else '(none / YouTube picks a frame)'}", flush=True)
 
     try:

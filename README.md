@@ -784,10 +784,18 @@ DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_youtube --chrome
 
 ```bash
 DISPLAY=:0 ./venv/bin/python upload_youtube.py videos/session10/session10.mp4 \
-    videos/session10/youtube.txt --chrome \
-    --playlist "Arsitektur Perangkat Lunak (Sofware Architecture)" --language Indonesian --post
+    videos/session10/youtube.txt --chrome --post
 ```
 
+- **Settings from `youtube.txt`** — a caption file may carry upload settings after
+  `KEYWORDS`, one header line plus one value line each: `PLAYLIST`, `LANGUAGE`,
+  `LICENSE` (`creative_commons` / `standard`), `VISIBILITY` (`public` / `unlisted` /
+  `private`), `MADE_FOR_KIDS` (`yes` / `no`) and `COVER` (a path relative to the `.txt`).
+  [slides_narrator](https://github.com/alfa-yohannis/slides_narrator) writes them. A
+  command-line flag (`--playlist`, `--language`, `--license`, `--visibility`,
+  `--made-for-kids`, or a positional cover) overrides the file, and `Settings` supplies
+  the rest. An invalid value is reported and ignored; these headers also end the
+  `KEYWORDS` block, so they never leak into the tags.
 - **Playlist** — `--playlist` (`Settings.yt_playlist`) ticks the playlist with exactly that
   title in the Details step's picker, then presses Done and checks the picker now names
   it. The picker's search box returns nothing for a query with brackets, so it searches

@@ -13,7 +13,37 @@ from unittest import mock
 import delete_youtube
 from uploader import Settings, Ledger, YouTubeUploader
 from uploader.uploaders.base import VideoUploader
-from uploader.uploaders.youtube import THUMBNAIL_MAX_BYTES, parse_video_id
+from uploader.uploaders.youtube import THUMBNAIL_MAX_BYTES, parse_upload_fields, parse_video_id
+
+#: a youtube.txt as slides_narrator writes it, upload settings after KEYWORDS
+NARRATOR_TXT = """TITLE
+CQRS dan Event Sourcing | Arsitektur Perangkat Lunak
+
+DESCRIPTION
+Deskripsi kuliah.
+#CQRS
+
+KEYWORDS
+CQRS, Event Sourcing
+
+PLAYLIST
+Arsitektur Perangkat Lunak (Sofware Architecture)
+
+LANGUAGE
+Indonesian
+
+LICENSE
+creative_commons
+
+VISIBILITY
+public
+
+MADE_FOR_KIDS
+no
+
+COVER
+slides/slide_01.png
+"""
 
 
 class FakeUploader(VideoUploader):
@@ -127,6 +157,34 @@ class LedgerVideoIdTests(unittest.TestCase):
         with mock.patch("uploader.uploaders.base.StealthBrowser"):
             FakeUploader(settings, self.ledger).upload(self.video)
         self.assertEqual(self.ledger.get_record(self.video, "youtube")["video_id"], "t9Z0Bku_itE")
+
+
+class UploadFieldTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "slides").mkdir()
+        (self.tmp / "slides" / "slide_01.png").write_bytes(b"img")
+
+    def test_reads_every_setting(self):
+        self.assertEqual(parse_upload_fields(NARRATOR_TXT, self.tmp), {
+            "playlist": "Arsitektur Perangkat Lunak (Sofware Architecture)",
+            "language": "Indonesian", "license": "creative_commons", "visibility": "public",
+            "made_for_kids": False, "cover": self.tmp / "slides" / "slide_01.png"})
+
+    def test_settings_do_not_leak_into_the_tags(self):
+        title, desc, tags = YouTubeUploader._parse_caption(NARRATOR_TXT)
+        self.assertEqual(title, "CQRS dan Event Sourcing | Arsitektur Perangkat Lunak")
+        self.assertEqual(tags, ["CQRS", "Event Sourcing"])
+        self.assertTrue(desc.endswith("#CQRS"))
+
+    def test_invalid_values_and_missing_cover_are_left_out(self):
+        text = ("TITLE\nT\n\nLICENSE\nweird\n\nVISIBILITY\nsecret\n\n"
+                "MADE_FOR_KIDS\nmaybe\n\nCOVER\nnope.png\n")
+        with mock.patch("builtins.print"):
+            self.assertEqual(parse_upload_fields(text, self.tmp), {})
+
+    def test_plain_caption_has_no_settings(self):
+        self.assertEqual(parse_upload_fields("Title line\n\nBody\n\nkw1, kw2", self.tmp), {})
 
 
 class DeleteTargetTests(unittest.TestCase):
