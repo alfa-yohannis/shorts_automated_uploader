@@ -84,7 +84,8 @@ class VideoUploader(ABC):
         # --no-post (auto_post=False) is a manual / preview run: never touch the
         # ledger — even if a manual Share is detected — so it stays re-runnable.
         if posted and self.settings.auto_post:
-            self.ledger.mark_uploaded(video, platform=self.site, caption=caption)
+            self.ledger.mark_uploaded(video, platform=self.site, caption=caption,
+                                      extra=self.record_extra())
             print(f"POSTED & recorded in ledger: {video.name}", flush=True)
         elif posted:
             print(f"Shared, but --no-post -> NOT recorded in the ledger (re-runnable).", flush=True)
@@ -110,7 +111,19 @@ class VideoUploader(ABC):
             cand = video.with_suffix(ext)
             if cand.exists():
                 return cand
+        # A slides_narrator build keeps one PNG per slide in slides/ next to the
+        # video (slides/slide_01.png, ...); the first slide is the title slide.
+        slides = video.parent / "slides"
+        if slides.is_dir():
+            pngs = sorted(slides.glob("*.png"))
+            if pngs:
+                return pngs[0]
         return None
+
+    def record_extra(self) -> dict:
+        """Site-specific fields to store in the ledger with a confirmed post. None by
+        default; YouTube returns the video id and URL it read from the upload dialog."""
+        return {}
 
     # --- orchestration (override to reorder for a platform's wizard) ------
 

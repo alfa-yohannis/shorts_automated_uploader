@@ -46,7 +46,11 @@ class Ledger:
                 return vids[key]
         return None
 
-    def mark_uploaded(self, path, platform: str = "tiktok", caption: str = "") -> dict:
+    def mark_uploaded(self, path, platform: str = "tiktok", caption: str = "",
+                      extra: dict | None = None) -> dict:
+        """Record a confirmed post. `extra` adds site-specific fields (YouTube stores
+        its video_id / url here, which delete_youtube.py later looks up); empty values
+        are skipped so a re-post never blanks a field recorded earlier."""
         data = self._load()
         key = self.video_key(path)
         bucket = data.setdefault(platform, {})
@@ -57,8 +61,26 @@ class Ledger:
             "first_uploaded": time.strftime("%Y-%m-%d %H:%M:%S"),
         })
         rec["last_uploaded"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        rec.update({k: v for k, v in (extra or {}).items() if v})
         bucket[key] = rec
         self._save(data)
+        return rec
+
+    def find_record(self, platform: str, **fields) -> tuple[str, dict] | None:
+        """The first (hash, record) on `platform` whose record matches every given
+        field, e.g. ``find_record("youtube", video_id="t9Z0Bku_itE")``; else None."""
+        for key, rec in self._load().get(platform, {}).items():
+            if all(rec.get(name) == value for name, value in fields.items()):
+                return key, rec
+        return None
+
+    def forget(self, platform: str, key: str) -> dict | None:
+        """Drop one record, e.g. after the video was deleted on the site, so the file
+        can be uploaded again without --force. Returns the removed record, or None."""
+        data = self._load()
+        rec = data.get(platform, {}).pop(key, None)
+        if rec is not None:
+            self._save(data)
         return rec
 
     def list_records(self) -> dict:

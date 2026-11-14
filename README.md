@@ -36,6 +36,8 @@ machine.
 | **YouTube** (Shorts + landscape) | ✅ working via **attach-to-real-Chrome (CDP)** — see [§17](#17-youtube) |
 | &nbsp;&nbsp;↳ title/desc/tags, language, recording date, CC license, not-for-kids, altered-content (No) | ✅ |
 | &nbsp;&nbsp;↳ Shorts "related video" link | ⚠️ best-effort (see [§17.4](#174-related-video-best-effort)) |
+| &nbsp;&nbsp;↳ add to a playlist (`--playlist`), record the video link in the ledger | ✅ (see [§17.6](#176-playlist-video-link-and-lecture-covers)) |
+| &nbsp;&nbsp;↳ delete a video (`delete_youtube.py`) | ✅ (see [§17.7](#177-delete-a-video)) |
 | Batch upload a whole folder | ✅ `batch_upload.py` (en+id → both platforms, ledger-aware) — see [§15](#15-batch-upload--scheduling) |
 | Scheduled drip-posting (cron) | ✅ `batch_upload.sh` at 5am/11am/5pm — see [§15](#15-batch-upload--scheduling) |
 
@@ -387,7 +389,8 @@ DISPLAY=:0 ./venv/bin/python upload_tiktok.py <video.mp4> [caption.txt|"text"] [
 DISPLAY=:0 ./venv/bin/python upload_instagram.py <video.mp4> [caption.txt|"text"] [cover.png] --chrome [--post] [--force]
 
 # --- YouTube (Shorts + landscape; attaches to real Chrome; see §17) ---
-DISPLAY=:0 ./venv/bin/python upload_youtube.py <video.mp4> [caption.txt] [cover.png] --chrome [--visibility public|unlisted|private] [--post] [--force]
+DISPLAY=:0 ./venv/bin/python upload_youtube.py <video.mp4> [caption.txt] [cover.png] --chrome [--visibility public|unlisted|private] [--playlist "<title>"] [--language Indonesian] [--post] [--force]
+DISPLAY=:0 ./venv/bin/python delete_youtube.py <video-id|youtu.be link|video.mp4> --chrome [--yes]   # dry run without --yes
 
 # see uploaded history
 ./venv/bin/python list_uploaded.py
@@ -403,7 +406,8 @@ DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_youtube --chrome
 ```
 
 Config flags live in [`uploader/config.py`](uploader/config.py) (`Settings`):
-`auto_post` (False), `disclose_ai` (True), `portrait_glob` (`*_portrait_*.mp4`), `cdp_url` (None).
+`auto_post` (False), `disclose_ai` (True), `portrait_glob` (`*_portrait_*.mp4`), `cdp_url` (None),
+and for YouTube `yt_visibility`, `yt_license`, `yt_playlist` and `yt_language`.
 
 ---
 
@@ -503,7 +507,9 @@ Unit tests live in [`tests/`](tests/) and use the stdlib `unittest` — **no ext
 dependencies, no browser, no network**. They cover the `Ledger` (per-platform lists,
 content-hash dedup, old-format migration), `Settings`, the portrait/caption/cover
 rules, and the `upload()` guards (`AlreadyUploaded` / `UploadSkipped` / `LoginRequired`,
-plus a mocked-browser success path that records to the ledger).
+plus a mocked-browser success path that records to the ledger). `tests/test_youtube.py`
+covers the YouTube additions: video-id parsing, the playlist search query, the 2 MB
+cover guard (needs ffmpeg), the `slides/` cover fallback, and the ledger's `video_id`.
 
 ```bash
 ./venv/bin/python -m unittest discover -s tests -v     # run everything
@@ -773,3 +779,45 @@ against the signed-in session, then update the selector constants in
 ```bash
 DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_youtube --chrome
 ```
+
+### 17.6 Playlist, video link, and lecture covers
+
+```bash
+DISPLAY=:0 ./venv/bin/python upload_youtube.py videos/session10/session10.mp4 \
+    videos/session10/youtube.txt --chrome \
+    --playlist "Arsitektur Perangkat Lunak (Sofware Architecture)" --language Indonesian --post
+```
+
+- **Playlist** — `--playlist` (`Settings.yt_playlist`) ticks the playlist with exactly that
+  title in the Details step's picker, then presses Done and checks the picker now names
+  it. The picker's search box returns nothing for a query with brackets, so it searches
+  the plain-word start of the title (`Arsitektur Perangkat Lunak`) and matches the full
+  title exactly. A title that isn't on the channel is reported and skipped.
+- **Language** — `--language` (`Settings.yt_language`) sets the video language for files
+  without an `_en`/`_id` suffix, such as `session10.mp4`.
+- **Video link** — the dialog shows the `youtu.be` link as soon as the file is picked, so
+  the uploader prints it (`Video link: …`, and `Video URL: …` at the end) and a confirmed
+  post stores `video_id`, `url` and `playlist` in the ledger record.
+- **Cover** — besides a sibling `<video>.png/.jpg`, the cover falls back to the first PNG
+  in a `slides/` folder next to the video, which is where `slides_narrator` writes its
+  slide images (`slides/slide_01.png` is the title slide). A cover over YouTube's 2 MB
+  thumbnail limit is re-encoded to a 1280-wide JPEG with ffmpeg first.
+
+Studio's dialog hosts (`ytcp-playlist-dialog`, `ytcp-confirmation-dialog`) have zero
+height even while open, so Playwright always calls them hidden; the uploader waits on
+the buttons inside them instead.
+
+### 17.7 Delete a video
+
+```bash
+DISPLAY=:0 ./venv/bin/python delete_youtube.py https://youtu.be/<id> --chrome         # dry run
+DISPLAY=:0 ./venv/bin/python delete_youtube.py https://youtu.be/<id> --chrome --yes   # delete
+DISPLAY=:0 ./venv/bin/python delete_youtube.py videos/session10/session10.mp4 --chrome --yes
+```
+
+The target is a video id, any `youtu.be` / `watch?v=` / `shorts/` / Studio link, or a local
+file whose ledger record holds a `video_id`. It opens the video's Studio edit page ->
+**Options** -> **Delete**, ticks *"I understand …"*, and confirms. Without `--yes` it stops at
+the dialog, prints what it names, and cancels. Afterwards it reloads the edit page and
+only reports success on Studio's *"Oops, something went wrong"* page; the matching ledger
+record is then removed, so the same file can be uploaded again without `--force`.

@@ -20,6 +20,8 @@ class Settings:
     yt_made_for_kids: bool = False   # the required "made for kids" audience flag
     yt_channel_id: str = "UCEWLCMe8iwKOakYoaQ2k1eg"   # Studio channel to upload to
     yt_license: str = "creative_commons"   # creative_commons | standard
+    yt_playlist: str | None = None   # exact title of a playlist to add each upload to
+    yt_language: str | None = None   # e.g. "Indonesian"; None -> from the _en/_id suffix
 
     profiles_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "profiles")
     ledger_path: Path = field(default_factory=lambda: PROJECT_ROOT / "ledger.json")

@@ -20,21 +20,48 @@ Caption .txt layout — positional (preferred, no markers needed):
 Alternatively, use explicit markers on their own lines:
     TITLE / DESCRIPTION / KEYWORDS
 
-Also set per video: audience = NOT made for kids; video language from the file
-suffix (``_en`` -> English, ``_id`` -> Indonesian); recording date = today;
-custom thumbnail ONLY for landscape (the web app rejects Short thumbnails);
-visibility from settings.yt_visibility (default public).
+Also set per video: audience = NOT made for kids; video language from
+settings.yt_language, else the file suffix (``_en`` -> English, ``_id`` ->
+Indonesian); recording date = today; custom thumbnail ONLY for landscape (the web
+app rejects Short thumbnails; a cover over YouTube's 2 MB limit is re-encoded to
+JPEG first); the playlist titled settings.yt_playlist; visibility from
+settings.yt_visibility (default public). The video's youtu.be link is read from the
+dialog as soon as the file is picked, printed, and stored in the ledger.
 
 Wizard: upload URL opens the dialog -> pick file -> [Details: title, description,
-thumbnail, audience, Show more: tags/language/date] -> Next x3 -> Visibility -> Publish.
+thumbnail, playlist, audience, Show more: tags/language/date] -> Next x3 ->
+Visibility -> Publish.
+
+Delete: ``delete()`` opens the video's Studio edit page -> Options -> Delete ->
+ticks "I understand ..." -> confirms, then drops the video from the ledger.
 """
 import random
 import re
+import subprocess
+import tempfile
 import time
 from datetime import date
 from pathlib import Path
 
-from .base import VideoUploader
+from ..browser import StealthBrowser
+from .base import LoginRequired, VideoUploader
+
+#: YouTube rejects custom thumbnails larger than 2 MB.
+THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
+#: the 11-character id in youtu.be/<id>, watch?v=<id>, shorts/<id>, video/<id>
+_ID = r"[0-9A-Za-z_-]{11}"
+_ID_IN_LINK = [rf"youtu\.be/({_ID})", rf"[?&]v=({_ID})", rf"/shorts/({_ID})", rf"/video/({_ID})"]
+
+
+def parse_video_id(ref: str) -> str | None:
+    """The video id in a bare id, a youtu.be / watch?v= / shorts/ link, or a Studio
+    /video/<id>/ URL. Returns None when `ref` holds no id."""
+    ref = (ref or "").strip()
+    for pattern in _ID_IN_LINK:
+        match = re.search(pattern, ref)
+        if match:
+            return match.group(1)
+    return ref if re.fullmatch(_ID, ref) else None
 
 
 class YouTubeUploader(VideoUploader):
@@ -75,6 +102,25 @@ class YouTubeUploader(VideoUploader):
     _DATE_INPUT = "ytcp-date-picker input"   # scoped to the picker (NOT the Video location field)
     _LICENSE_OPTION = {"creative_commons": "Creative Commons", "standard": "Standard YouTube License"}
     _VIS_RADIO = {"public": "PUBLIC", "unlisted": "UNLISTED", "private": "PRIVATE"}
+    _VIDEO_LINK = "ytcp-uploads-dialog a#video-link, a#video-link"
+    # the Details step's playlist picker (Studio keeps hidden bulk-edit copies of the
+    # trigger outside the dialog, so the trigger is scoped to the upload dialog)
+    _PLAYLIST_TRIGGER = "ytcp-uploads-dialog ytcp-video-metadata-playlists ytcp-text-dropdown-trigger"
+    _PLAYLIST_DIALOG = "ytcp-playlist-dialog"
+    _PLAYLIST_SEARCH = "input#search-input"
+    _PLAYLIST_ITEM = "label.ytcp-checkbox-label"
+    _PLAYLIST_DONE = "ytcp-button.done-button"
+    # deleting from the video's edit page: Options menu -> Delete -> confirmation dialog
+    _OPTIONS_BTN = "ytcp-icon-button#overflow-menu-button"
+    _DELETE_ITEM = "tp-yt-paper-item[test-id=VIDEO_DELETE]"
+    _DELETE_DIALOG = "ytcp-confirmation-dialog#delete-dialog"
+    _DELETE_CHECKBOX = "ytcp-checkbox-lit#confirm-checkbox"   # click the host: its inner
+    _DELETE_CHECK_STATE = "#confirm-checkbox #checkbox"       # box is covered by a container
+    _DELETE_CONFIRM = "ytcp-button#confirm-button"
+    _DELETE_CANCEL = "ytcp-button#cancel-button"
+
+    #: youtu.be link of the last upload, read from the dialog (None until known)
+    video_url: str | None = None
 
     # Only TRUE post-publish confirmations — NOT "processing"/"uploading" text, which
     # shows during the normal upload and would falsely report success before Publish.
@@ -86,6 +132,7 @@ class YouTubeUploader(VideoUploader):
     def _run_steps(self, page, video: Path, caption: str, cover: Path | None) -> bool:
         self._navigate(page)
         self._select_video(page, video)
+        self.video_url = self._read_video_link(page)     # known before Publish, even for a draft
         tags = []
         if caption:
             self._set_caption(page, caption)            # title + description
@@ -95,10 +142,13 @@ class YouTubeUploader(VideoUploader):
             self._set_cover(page, cover)
         elif cover:
             print("Portrait video — custom thumbnail not supported on the web; skipping.", flush=True)
+        if self.settings.yt_playlist:
+            self._set_playlist(page, self.settings.yt_playlist)
         self._set_made_for_kids(page)
         self._expand_show_more(page)                            # reveals altered-content + tags/lang/date/license
         self._set_altered_content(page)                         # AI/altered-content disclosure -> No
-        self._set_advanced(page, tags, self._lang_for(video))   # tags, language, recording date, license
+        language = self.settings.yt_language or self._lang_for(video)
+        self._set_advanced(page, tags, language)                # tags, language, recording date, license
         if self.is_portrait(video):                             # Shorts: link a related video
             self._set_related_video(page, video)
         return self._post(page)
@@ -161,13 +211,183 @@ class YouTubeUploader(VideoUploader):
         try:
             inp = page.locator(self._THUMB_INPUT)
             if inp.count():
-                inp.first.set_input_files(str(cover))
+                inp.first.set_input_files(str(self._thumbnail_file(cover)))
                 print("Thumbnail uploaded.", flush=True)
                 page.wait_for_timeout(3000)
             else:
                 print("Thumbnail input not found; skipping.", flush=True)
         except Exception as e:
             print(f"Thumbnail step skipped ({e}).", flush=True)
+
+    @staticmethod
+    def _thumbnail_file(cover: Path) -> Path:
+        """`cover` itself when it fits YouTube's 2 MB thumbnail limit; otherwise a
+        1280-wide JPEG re-encode of it in a temp dir, stepping the quality down
+        until it fits. Returns the file to hand to the thumbnail input."""
+        cover = Path(cover)
+        if cover.stat().st_size <= THUMBNAIL_MAX_BYTES:
+            return cover
+        target = Path(tempfile.mkdtemp(prefix="yt_thumb_")) / f"{cover.stem}.jpg"
+        for quality in (2, 4, 6, 10):
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(cover),
+                            "-vf", "scale=1280:-2", "-q:v", str(quality), str(target)],
+                           check=True)
+            if target.stat().st_size <= THUMBNAIL_MAX_BYTES:
+                break
+        print(f"Cover is over 2 MB; re-encoded to {target} "
+              f"({target.stat().st_size // 1024} KiB).", flush=True)
+        return target
+
+    def _read_video_link(self, page, timeout_ms: int = 60000) -> str | None:
+        """The youtu.be link the upload dialog shows once the file is picked; the id
+        exists before Publish, even for a draft. Printed, and returned for the
+        ledger. None when it never appears."""
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            try:
+                link = page.locator(self._VIDEO_LINK).first
+                href = link.get_attribute("href") if link.count() else None
+                if href and parse_video_id(href):
+                    print(f"Video link: {href}", flush=True)
+                    return href
+            except Exception:
+                pass
+            page.wait_for_timeout(1000)
+        print("Video link never appeared in the dialog; it is not recorded.", flush=True)
+        return None
+
+    def record_extra(self) -> dict:
+        """The video id and youtu.be link read from the dialog, plus the playlist, so
+        the ledger can later say which video a file became (delete_youtube.py)."""
+        return {"video_id": parse_video_id(self.video_url or ""),
+                "url": self.video_url, "playlist": self.settings.yt_playlist}
+
+    def _set_playlist(self, page, name: str) -> bool:
+        """Tick the playlist titled exactly `name` in the Details step's playlist
+        picker, then press Done. Studio's picker search returns nothing for a query
+        with brackets, so it searches the plain-word start of the title and then
+        matches the full title exactly. Returns True once the trigger shows it."""
+        try:
+            trigger = page.locator(self._PLAYLIST_TRIGGER).first
+            trigger.scroll_into_view_if_needed(timeout=5000)
+            trigger.click(timeout=10000)
+            dialog = page.locator(self._PLAYLIST_DIALOG).first
+            # The dialog's host element has zero height even while open, so Playwright
+            # always calls it hidden; wait on its Done button instead.
+            dialog.locator(self._PLAYLIST_DONE).first.wait_for(state="visible", timeout=10000)
+            query = self._playlist_query(name)
+            if query:
+                dialog.locator(self._PLAYLIST_SEARCH).first.fill(query)
+                page.wait_for_timeout(2000)            # the list filters asynchronously
+            exact = re.compile(rf"^\s*{re.escape(name)}\s*$")
+            item = dialog.locator(f"{self._PLAYLIST_ITEM}:visible").filter(has_text=exact)
+            if not item.count():
+                print(f"Playlist '{name}' not found on the channel; add it by hand.", flush=True)
+                dialog.locator(self._PLAYLIST_DONE).first.click(timeout=5000)
+                return False
+            if item.first.locator("#checkbox").get_attribute("aria-checked") != "true":
+                item.first.click(timeout=5000)
+                page.wait_for_timeout(600)
+            dialog.locator(self._PLAYLIST_DONE).first.click(timeout=5000)
+            page.wait_for_timeout(1500)
+            shown = (trigger.inner_text() or "").strip()
+            if name in shown:
+                print(f"Playlist set: {name}.", flush=True)
+                return True
+            print(f"Playlist not confirmed (picker shows {shown!r}); check it by hand.", flush=True)
+            return False
+        except Exception as e:
+            print(f"Playlist step skipped ({e}); add it by hand.", flush=True)
+            self._close_overlay(page)
+            return False
+
+    @staticmethod
+    def _playlist_query(name: str) -> str:
+        """The leading run of plain words in a playlist title, used as the picker's
+        search query: 'Arsitektur Perangkat Lunak (Sofware Architecture)' gives
+        'Arsitektur Perangkat Lunak'. Empty when the title starts with a symbol."""
+        return re.match(r"[\w\s&'.,-]*", name).group(0).strip()
+
+    # --- delete -------------------------------------------------------------
+
+    def delete(self, video_id: str, confirm: bool = False) -> bool:
+        """Delete one video through its Studio edit page. With confirm=False it only
+        opens the delete dialog, prints what the dialog names, and cancels (a dry
+        run). Returns True when the video is gone; its ledger record, if any, is then
+        removed so the file can be uploaded again without --force."""
+        if not self.settings.cdp_url and not (self.settings.profiles_dir / self.site).exists():
+            raise LoginRequired(f"No saved profile. Run:  ./venv/bin/python login.py {self.site}")
+        with StealthBrowser(self.site, self.settings.profiles_dir,
+                            cdp_url=self.settings.cdp_url) as browser:
+            page = browser.new_page()
+            deleted = self._delete_steps(page, video_id, confirm)
+        if deleted:
+            found = self.ledger.find_record(self.site, video_id=video_id)
+            if found:
+                self.ledger.forget(self.site, found[0])
+                print(f"Removed from the ledger: {found[1].get('name')}", flush=True)
+        return deleted
+
+    def _delete_steps(self, page, video_id: str, confirm: bool) -> bool:
+        """Edit page -> Options -> Delete -> tick 'I understand' -> confirm, then
+        reload the edit page to check the video is really gone."""
+        edit_url = f"https://studio.youtube.com/video/{video_id}/edit"
+        page.goto(edit_url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(5000)                       # Studio is slow to hydrate
+        if not self._click_first(page, self._OPTIONS_BTN, timeout=20000):
+            print(f"No Options menu for {video_id}: wrong account/channel, or already deleted.",
+                  flush=True)
+            return False
+        page.wait_for_timeout(800)
+        if not self._click_first(page, self._DELETE_ITEM, timeout=8000):
+            print("'Delete' is missing from the Options menu; delete it by hand.", flush=True)
+            self._close_overlay(page)
+            return False
+        # The dialog's host element has zero height even while open, so Playwright
+        # always calls it hidden; its buttons show whether it is really open.
+        dialog = page.locator(self._DELETE_DIALOG).first
+        cancel = dialog.locator(self._DELETE_CANCEL).first
+        cancel.wait_for(state="visible", timeout=15000)
+        print(f"Delete dialog: {' '.join((dialog.inner_text() or '').split())[:200]}", flush=True)
+        if not confirm:
+            cancel.click(timeout=5000)
+            print("Dry run: cancelled. Re-run with --yes to delete.", flush=True)
+            return False
+        dialog.locator(self._DELETE_CHECKBOX).first.click(timeout=5000)
+        page.wait_for_timeout(500)
+        if dialog.locator(self._DELETE_CHECK_STATE).first.get_attribute("aria-checked") != "true":
+            print("Could not tick 'I understand ...'; delete it by hand.", flush=True)
+            cancel.click(timeout=5000)
+            return False
+        button = dialog.locator(self._DELETE_CONFIRM).first
+        deadline = time.time() + 10                       # enabled once the box is ticked
+        while button.get_attribute("aria-disabled") == "true" and time.time() < deadline:
+            page.wait_for_timeout(300)
+        button.click(timeout=5000)
+        try:
+            button.wait_for(state="hidden", timeout=30000)
+        except Exception:
+            print("The delete dialog did not close; check Studio by hand.", flush=True)
+            return False
+        page.wait_for_timeout(3000)
+        return self._is_gone(page, edit_url)
+
+    def _is_gone(self, page, edit_url: str) -> bool:
+        """Reload the edit page and wait for one of two signals: Studio's 'Oops,
+        something went wrong' page (the video is gone) or the Options menu (it is
+        not). Seeing neither within 30 s counts as not deleted, with a note to check."""
+        page.goto(edit_url, wait_until="domcontentloaded", timeout=45000)
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            page.wait_for_timeout(1500)
+            if page.locator(self._OPTIONS_BTN).count():
+                print("The video still opens in Studio; it was NOT deleted.", flush=True)
+                return False
+            if page.get_by_text("something went wrong", exact=False).count():
+                print("Deleted: Studio no longer finds the video.", flush=True)
+                return True
+        print("Could not confirm the deletion; check Studio by hand.", flush=True)
+        return False
 
     def _set_made_for_kids(self, page):
         """REQUIRED: pick the audience radio, else Publish stays disabled."""
@@ -461,7 +681,8 @@ class YouTubeUploader(VideoUploader):
         self._set_visibility(page)
 
         if not self.settings.auto_post:
-            print("\nReady on the Visibility step (public selected) — saved as a draft. "
+            chosen = (self.settings.yt_visibility or "public").lower()
+            print(f"\nReady on the Visibility step ({chosen} selected) — saved as a draft. "
                   "Review and Publish by hand when you like (--no-post records nothing).", flush=True)
             return False
 
