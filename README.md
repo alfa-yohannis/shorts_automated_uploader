@@ -36,7 +36,7 @@ machine.
 | **YouTube** (Shorts + landscape) | ✅ working via **attach-to-real-Chrome (CDP)** — see [§17](#17-youtube) |
 | &nbsp;&nbsp;↳ title/desc/tags, language, recording date, CC license, not-for-kids, altered-content (No) | ✅ |
 | &nbsp;&nbsp;↳ Shorts "related video" link | ⚠️ best-effort (see [§17.4](#174-related-video-best-effort)) |
-| &nbsp;&nbsp;↳ add to a playlist (`--playlist`), record the video link in the ledger | ✅ (see [§17.6](#176-playlist-video-link-and-lecture-covers)) |
+| &nbsp;&nbsp;↳ all settings from `youtube.txt`: playlist, category, subtitles, recording date, video link in the ledger | ✅ (see [§17.6](#176-lecture-uploads-youtubetxt-settings-playlist-subtitles)) |
 | &nbsp;&nbsp;↳ delete a video (`delete_youtube.py`) | ✅ (see [§17.7](#177-delete-a-video)) |
 | Batch upload a whole folder | ✅ `batch_upload.py` (en+id → both platforms, ledger-aware) — see [§15](#15-batch-upload--scheduling) |
 | Scheduled drip-posting (cron) | ✅ `batch_upload.sh` at 5am/11am/5pm — see [§15](#15-batch-upload--scheduling) |
@@ -390,6 +390,7 @@ DISPLAY=:0 ./venv/bin/python upload_instagram.py <video.mp4> [caption.txt|"text"
 
 # --- YouTube (Shorts + landscape; attaches to real Chrome; see §17) ---
 DISPLAY=:0 ./venv/bin/python upload_youtube.py <video.mp4> [caption.txt] [cover.png] --chrome [--visibility public|unlisted|private] [--playlist "<title>"] [--language Indonesian] [--post] [--force]
+DISPLAY=:0 ./venv/bin/python upload_youtube.py videos/session10/youtube.txt --chrome --post   # everything from youtube.txt
 DISPLAY=:0 ./venv/bin/python delete_youtube.py <video-id|youtu.be link|video.mp4> --chrome [--yes]   # dry run without --yes
 
 # see uploaded history
@@ -407,7 +408,8 @@ DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_youtube --chrome
 
 Config flags live in [`uploader/config.py`](uploader/config.py) (`Settings`):
 `auto_post` (False), `disclose_ai` (True), `portrait_glob` (`*_portrait_*.mp4`), `cdp_url` (None),
-and for YouTube `yt_visibility`, `yt_license`, `yt_playlist` and `yt_language`.
+and for YouTube `yt_visibility`, `yt_license`, `yt_playlist`, `yt_language`,
+`yt_category`, `yt_altered_content`, `yt_recording_date` and `yt_subtitles`.
 
 ---
 
@@ -780,36 +782,52 @@ against the signed-in session, then update the selector constants in
 DISPLAY=:0 ./venv/bin/python -m uploader.dev.inspect_youtube --chrome
 ```
 
-### 17.6 Playlist, video link, and lecture covers
+### 17.6 Lecture uploads: youtube.txt settings, playlist, subtitles
 
 ```bash
-DISPLAY=:0 ./venv/bin/python upload_youtube.py videos/session10/session10.mp4 \
-    videos/session10/youtube.txt --chrome --post
+DISPLAY=:0 ./venv/bin/python upload_youtube.py videos/session10/youtube.txt --chrome --post
 ```
 
-- **Settings from `youtube.txt`** — a caption file may carry upload settings after
-  `KEYWORDS`, one header line plus one value line each: `PLAYLIST`, `LANGUAGE`,
-  `LICENSE` (`creative_commons` / `standard`), `VISIBILITY` (`public` / `unlisted` /
-  `private`), `MADE_FOR_KIDS` (`yes` / `no`) and `COVER` (a path relative to the `.txt`).
-  [slides_narrator](https://github.com/alfa-yohannis/slides_narrator) writes them. A
-  command-line flag (`--playlist`, `--language`, `--license`, `--visibility`,
-  `--made-for-kids`, or a positional cover) overrides the file, and `Settings` supplies
-  the rest. An invalid value is reported and ignored; these headers also end the
-  `KEYWORDS` block, so they never leak into the tags.
-- **Playlist** — `--playlist` (`Settings.yt_playlist`) ticks the playlist with exactly that
-  title in the Details step's picker, then presses Done and checks the picker now names
-  it. The picker's search box returns nothing for a query with brackets, so it searches
-  the plain-word start of the title (`Arsitektur Perangkat Lunak`) and matches the full
-  title exactly. A title that isn't on the channel is reported and skipped.
-- **Language** — `--language` (`Settings.yt_language`) sets the video language for files
-  without an `_en`/`_id` suffix, such as `session10.mp4`.
+A [slides_narrator](https://github.com/alfa-yohannis/slides_narrator) `youtube.txt` is the
+only argument. After `TITLE` / `DESCRIPTION` / `KEYWORDS` it carries one header line plus
+one value line per upload setting, and the uploader applies them all:
+
+| Header | Value | Applied as |
+|---|---|---|
+| `VIDEO` | path, relative to the `.txt` | the file to upload |
+| `PLAYLIST` | exact playlist title | ticked in the Details step's playlist picker |
+| `LANGUAGE` | as Studio lists it, e.g. `Indonesian` | Video language (Studio needs it before subtitles) |
+| `CATEGORY` | as Studio lists it, e.g. `Education` | Category, under Show more |
+| `LICENSE` | `creative_commons` / `standard` | License |
+| `VISIBILITY` | `public` / `unlisted` / `private` | the Visibility step |
+| `MADE_FOR_KIDS` | `yes` / `no` | Audience |
+| `ALTERED_CONTENT` | `yes` / `no` | the altered or synthetic content question |
+| `RECORDING_DATE` | `YYYY-MM-DD` | Recording date (else today) |
+| `COVER` | path | custom thumbnail |
+| `SUBTITLES` | path to an `.srt` | Video elements -> Subtitles -> Upload file, with timing |
+
+A command-line flag (`--playlist`, `--language`, `--category`, `--license`, `--visibility`,
+`--made-for-kids`, `--altered-content`, `--subtitles`, or a positional cover) overrides the
+file, and `Settings` supplies the rest. An invalid value or a missing file is reported and
+ignored. The setting headers also end the `KEYWORDS` block, so they never leak into the
+tags. The older `<video.mp4> <caption.txt>` call still works and reads the same settings.
+
+- **Playlist** — the picker's search box returns nothing for a query with brackets, so it
+  searches the plain-word start of the title (`Arsitektur Perangkat Lunak`), matches the
+  full title exactly, presses Done, and checks the picker now names it. A title that isn't
+  on the channel is reported and skipped.
+- **Category** — the dropdown's trigger shows only its current value, so it is found by
+  its form id (`ytcp-form-select#category`) and the option is matched exactly.
+- **Subtitles** — Studio enables the Subtitles **Add** button only once the video language
+  is set. The uploader picks **Upload file** -> **With timing** -> **Continue**, answers the
+  file chooser with the `.srt`, and presses **Done** once the editor has parsed it.
 - **Video link** — the dialog shows the `youtu.be` link as soon as the file is picked, so
   the uploader prints it (`Video link: …`, and `Video URL: …` at the end) and a confirmed
   post stores `video_id`, `url` and `playlist` in the ledger record.
-- **Cover** — besides a sibling `<video>.png/.jpg`, the cover falls back to the first PNG
-  in a `slides/` folder next to the video, which is where `slides_narrator` writes its
-  slide images (`slides/slide_01.png` is the title slide). A cover over YouTube's 2 MB
-  thumbnail limit is re-encoded to a 1280-wide JPEG with ffmpeg first.
+- **Cover** — besides `COVER` and a sibling `<video>.png/.jpg`, the cover falls back to
+  the first PNG in a `slides/` folder next to the video, where `slides_narrator` writes
+  its slide images. A cover over YouTube's 2 MB thumbnail limit is re-encoded to a
+  1280-wide JPEG with ffmpeg first.
 
 Studio's dialog hosts (`ytcp-playlist-dialog`, `ytcp-confirmation-dialog`) have zero
 height even while open, so Playwright always calls them hidden; the uploader waits on

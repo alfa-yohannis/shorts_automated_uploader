@@ -1,5 +1,6 @@
 """Project-wide settings, resolved relative to the repo root."""
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 # uploader/config.py -> repo root is two levels up.
@@ -22,6 +23,10 @@ class Settings:
     yt_license: str = "creative_commons"   # creative_commons | standard
     yt_playlist: str | None = None   # exact title of a playlist to add each upload to
     yt_language: str | None = None   # e.g. "Indonesian"; None -> from the _en/_id suffix
+    yt_category: str | None = None   # e.g. "Education"; None -> leave Studio's default
+    yt_altered_content: bool = False   # answer to the altered/synthetic content question
+    yt_recording_date: date | None = None   # None -> today
+    yt_subtitles: Path | None = None   # an .srt uploaded on the Video elements step
 
     profiles_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "profiles")
     ledger_path: Path = field(default_factory=lambda: PROJECT_ROOT / "ledger.json")

@@ -56,18 +56,41 @@ _ID_IN_LINK = [rf"youtu\.be/({_ID})", rf"[?&]v=({_ID})", rf"/shorts/({_ID})", rf
 #: youtube.txt headers: the three text blocks, then the upload settings that
 #: slides_narrator writes after KEYWORDS (one value line each).
 TEXT_HEADERS = ("TITLE", "DESCRIPTION", "KEYWORDS")
-SETTING_HEADERS = ("PLAYLIST", "LANGUAGE", "LICENSE", "VISIBILITY", "MADE_FOR_KIDS", "COVER")
+SETTING_HEADERS = ("VIDEO", "PLAYLIST", "LANGUAGE", "CATEGORY", "LICENSE", "VISIBILITY",
+                   "MADE_FOR_KIDS", "ALTERED_CONTENT", "RECORDING_DATE", "COVER", "SUBTITLES")
 _VISIBILITIES = ("public", "unlisted", "private")
 _YES = ("yes", "true", "1")
 _NO = ("no", "false", "0")
 
 
+def _yes_no(header: str, value: str) -> bool | None:
+    """True / False for a yes-no setting; None (reported) when it is neither."""
+    answer = value.lower()
+    if answer in _YES + _NO:
+        return answer in _YES
+    print(f"youtube.txt {header} {value!r} is not yes/no; ignored.", flush=True)
+    return None
+
+
+def _existing_path(header: str, value: str, base_dir: Path | None) -> Path | None:
+    """A path setting resolved against `base_dir`; None (reported) when the file
+    does not exist, so a stale youtube.txt never points the upload at nothing."""
+    path = Path(value).expanduser()
+    if not path.is_absolute() and base_dir is not None:
+        path = Path(base_dir) / path
+    if path.exists():
+        return path
+    print(f"youtube.txt {header} {value!r} not found at {path}; ignored.", flush=True)
+    return None
+
+
 def parse_upload_fields(caption: str, base_dir: Path | None = None) -> dict:
-    """Upload settings from a youtube.txt's PLAYLIST / LANGUAGE / LICENSE / VISIBILITY
-    / MADE_FOR_KIDS / COVER blocks, as the keys playlist, language, license,
-    visibility, made_for_kids (bool) and cover (a Path resolved against `base_dir`).
-    A missing block is absent from the result; an invalid value is reported and
-    left out, so the caller falls back to its own default."""
+    """Upload settings from the setting blocks of a youtube.txt (SETTING_HEADERS),
+    as the keys video, playlist, language, category, license, visibility,
+    made_for_kids, altered_content, recording_date, cover and subtitles. Paths are
+    resolved against `base_dir`, yes/no become bools, the date a datetime.date. A
+    missing block is absent from the result; an invalid value is reported and left
+    out, so the caller falls back to its own default."""
     values = {}
     section = None
     for line in caption.splitlines():
@@ -78,10 +101,26 @@ def parse_upload_fields(caption: str, base_dir: Path | None = None) -> dict:
             values[section] = line.strip()
 
     fields = {}
-    if "PLAYLIST" in values:
-        fields["playlist"] = values["PLAYLIST"]
-    if "LANGUAGE" in values:
-        fields["language"] = values["LANGUAGE"]
+    for header, key in (("PLAYLIST", "playlist"), ("LANGUAGE", "language"),
+                        ("CATEGORY", "category")):
+        if header in values:
+            fields[key] = values[header]
+    for header, key in (("VIDEO", "video"), ("COVER", "cover"), ("SUBTITLES", "subtitles")):
+        if header in values:
+            path = _existing_path(header, values[header], base_dir)
+            if path is not None:
+                fields[key] = path
+    for header, key in (("MADE_FOR_KIDS", "made_for_kids"), ("ALTERED_CONTENT", "altered_content")):
+        if header in values:
+            answer = _yes_no(header, values[header])
+            if answer is not None:
+                fields[key] = answer
+    if "RECORDING_DATE" in values:
+        try:
+            fields["recording_date"] = date.fromisoformat(values["RECORDING_DATE"])
+        except ValueError:
+            print(f"youtube.txt RECORDING_DATE {values['RECORDING_DATE']!r} is not "
+                  "YYYY-MM-DD; ignored.", flush=True)
     if "LICENSE" in values:
         key = values["LICENSE"].lower()
         if key.startswith("creative"):
@@ -97,22 +136,6 @@ def parse_upload_fields(caption: str, base_dir: Path | None = None) -> dict:
         else:
             print(f"youtube.txt VISIBILITY {values['VISIBILITY']!r} is not one of "
                   f"{', '.join(_VISIBILITIES)}; ignored.", flush=True)
-    if "MADE_FOR_KIDS" in values:
-        answer = values["MADE_FOR_KIDS"].lower()
-        if answer in _YES + _NO:
-            fields["made_for_kids"] = answer in _YES
-        else:
-            print(f"youtube.txt MADE_FOR_KIDS {values['MADE_FOR_KIDS']!r} is not yes/no; "
-                  "ignored.", flush=True)
-    if "COVER" in values:
-        cover = Path(values["COVER"]).expanduser()
-        if not cover.is_absolute() and base_dir is not None:
-            cover = Path(base_dir) / cover
-        if cover.exists():
-            fields["cover"] = cover
-        else:
-            print(f"youtube.txt COVER {values['COVER']!r} not found at {cover}; ignored.",
-                  flush=True)
     return fields
 
 
@@ -149,6 +172,18 @@ class YouTubeUploader(VideoUploader):
     _MFK_NO = "tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS_NOT_MFK']"
     _MFK_YES = "tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS_MFK']"
     _ALTERED_NO = "tp-yt-paper-radio-button[name='VIDEO_HAS_ALTERED_CONTENT_NO']"
+    _ALTERED_YES = "tp-yt-paper-radio-button[name='VIDEO_HAS_ALTERED_CONTENT_YES']"
+    # the Category dropdown under Show more shows only its current value, so it is
+    # found by its form id rather than by a label
+    _CATEGORY_TRIGGER = "ytcp-uploads-dialog ytcp-form-select#category ytcp-text-dropdown-trigger"
+    # subtitles on the Video elements step (enabled only once the video language is set)
+    _SUBTITLES_BTN = "ytcp-uploads-dialog ytcp-button#subtitles-button"
+    _CAPTIONS_MODAL = "ytve-captions-editor-modal"
+    _CAPTIONS_UPLOAD_CHOICE = "button#choose-upload-file"
+    _CAPTIONS_UPLOAD_DIALOG = "ytve-captions-editor-upload-dialog"
+    _CAPTIONS_WITH_TIMING = "tp-yt-paper-radio-button[name=with-timing]"
+    _CAPTIONS_CONTINUE = "ytcp-button#confirm-button"
+    _CAPTIONS_DONE = "ytcp-button#publish-button"
     _RELATED_ADD = ("ytcp-video-metadata-related-video ytcp-button, "
                     "#related-video ytcp-button, #related-video-container ytcp-button, "
                     "ytcp-button[aria-label*='related' i]")
@@ -212,6 +247,7 @@ class YouTubeUploader(VideoUploader):
         self._set_altered_content(page)                         # AI/altered-content disclosure -> No
         language = self.settings.yt_language or self._lang_for(video)
         self._set_advanced(page, tags, language)                # tags, language, recording date, license
+        self._set_category(page)
         if self.is_portrait(video):                             # Shorts: link a related video
             self._set_related_video(page, video)
         return self._post(page)
@@ -384,6 +420,8 @@ class YouTubeUploader(VideoUploader):
                             cdp_url=self.settings.cdp_url) as browser:
             page = browser.new_page()
             deleted = self._delete_steps(page, video_id, confirm)
+            if browser.attached:
+                page.close()          # attach mode opened this tab; leave none behind
         if deleted:
             found = self.ledger.find_record(self.site, video_id=video_id)
             if found:
@@ -468,21 +506,89 @@ class YouTubeUploader(VideoUploader):
             print(f"Audience step failed ({e}); set it by hand.", flush=True)
 
     def _set_altered_content(self, page):
-        """REQUIRED: the 'altered / AI content' disclosure -> No (else Next blocks).
-        The section lazy-renders, so wait for the radio to appear."""
+        """REQUIRED: the 'altered / AI content' disclosure (else Next blocks): Yes
+        when settings.yt_altered_content, otherwise No. The section lazy-renders, so
+        wait for the radio to appear."""
+        selector = self._ALTERED_YES if self.settings.yt_altered_content else self._ALTERED_NO
+        answer = "Yes" if self.settings.yt_altered_content else "No"
         # Lives below 'Show more' (expanded just before this) — wait for it to render.
         try:
-            page.wait_for_selector(self._ALTERED_NO, state="attached", timeout=10000)
+            page.wait_for_selector(selector, state="attached", timeout=10000)
         except Exception:
             print("Altered-content radio not found (Show more not expanded?); skipping.", flush=True)
             return
         try:
-            r = page.locator(self._ALTERED_NO).first
+            r = page.locator(selector).first
             r.scroll_into_view_if_needed(timeout=5000)
             r.click(timeout=10000)
-            print("Altered content (AI use): No.", flush=True)
+            print(f"Altered content (AI use): {answer}.", flush=True)
         except Exception as e:
             print(f"Altered-content click failed ({e}); set it by hand.", flush=True)
+
+    def _set_category(self, page) -> bool:
+        """Pick settings.yt_category (e.g. 'Education') in the Category dropdown under
+        Show more; nothing to do when it is unset. Returns True once the dropdown
+        shows that category."""
+        name = self.settings.yt_category
+        if not name:
+            return False
+        try:
+            trigger = page.locator(self._CATEGORY_TRIGGER).first
+            trigger.scroll_into_view_if_needed(timeout=5000)
+            trigger.click(timeout=8000)
+            page.wait_for_timeout(1200)
+            exact = re.compile(rf"^\s*{re.escape(name)}\s*$")
+            option = page.locator("tp-yt-paper-item:visible").filter(has_text=exact)
+            if not option.count():
+                print(f"Category '{name}' is not offered; set it by hand.", flush=True)
+                self._close_overlay(page)
+                return False
+            option.first.click(timeout=5000)
+            page.wait_for_timeout(600)
+            if name in (trigger.inner_text() or ""):
+                print(f"Category set: {name}.", flush=True)
+                return True
+            print(f"Category not confirmed; check it by hand.", flush=True)
+            return False
+        except Exception as e:
+            print(f"Category step skipped ({e}); set it by hand.", flush=True)
+            self._close_overlay(page)
+            return False
+
+    def _set_subtitles(self, page, srt: Path) -> bool:
+        """On the Video elements step: Subtitles -> Add -> Upload file -> With timing
+        -> Continue -> pick `srt` -> Done. Studio enables Add only once the video
+        language is set, so without one this reports and skips. Returns True when
+        the subtitle editor accepted the file and closed."""
+        try:
+            add = page.locator(self._SUBTITLES_BTN).first
+            add.wait_for(state="visible", timeout=15000)
+            if add.get_attribute("aria-disabled") == "true":
+                print("Subtitles need the video language set first; skipping.", flush=True)
+                return False
+            add.click(timeout=8000)
+            modal = page.locator(self._CAPTIONS_MODAL).first
+            choice = modal.locator(self._CAPTIONS_UPLOAD_CHOICE).first
+            choice.wait_for(state="visible", timeout=15000)
+            choice.click(timeout=8000)
+            dialog = page.locator(self._CAPTIONS_UPLOAD_DIALOG).first
+            timing = dialog.locator(self._CAPTIONS_WITH_TIMING).first
+            timing.wait_for(state="visible", timeout=10000)
+            timing.click(timeout=5000)
+            with page.expect_file_chooser(timeout=15000) as chooser:
+                dialog.locator(self._CAPTIONS_CONTINUE).first.click(timeout=8000)
+            chooser.value.set_files(str(srt))
+            done = modal.locator(self._CAPTIONS_DONE).first
+            deadline = time.time() + 60                   # enabled once the file is parsed
+            while done.get_attribute("aria-disabled") == "true" and time.time() < deadline:
+                page.wait_for_timeout(500)
+            done.click(timeout=8000)
+            done.wait_for(state="hidden", timeout=30000)
+            print(f"Subtitles uploaded: {Path(srt).name}.", flush=True)
+            return True
+        except Exception as e:
+            print(f"Subtitles step skipped ({e}); add them by hand.", flush=True)
+            return False
 
     def _set_related_video(self, page, video: Path):
         """Shorts only: link a random RELATED video that's also portrait + same
@@ -709,8 +815,9 @@ class YouTubeUploader(VideoUploader):
             print(f"License '{want}' not set; set it by hand.", flush=True)
 
     def _set_recording_date(self, page):
+        """Recording date = settings.yt_recording_date, else today."""
         try:
-            today = date.today()
+            today = self.settings.yt_recording_date or date.today()
             trig = page.locator(self._DATE_TRIGGER)
             if not trig.count():
                 print("Recording-date control not found; skipping.", flush=True); return
@@ -737,10 +844,12 @@ class YouTubeUploader(VideoUploader):
 
     def _post(self, page) -> bool:
         # Details -> Video elements -> Checks -> Visibility (3 x Next)
-        for _ in range(3):
+        for step in range(3):
             if not self._click_first(page, self._NEXT_BTN, timeout=15000):
                 break
             page.wait_for_timeout(1500)
+            if step == 0 and self.settings.yt_subtitles:      # now on Video elements
+                self._set_subtitles(page, self.settings.yt_subtitles)
         self._set_visibility(page)
 
         if not self.settings.auto_post:

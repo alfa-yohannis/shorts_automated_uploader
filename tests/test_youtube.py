@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -26,11 +27,17 @@ Deskripsi kuliah.
 KEYWORDS
 CQRS, Event Sourcing
 
+VIDEO
+session10.mp4
+
 PLAYLIST
 Arsitektur Perangkat Lunak (Sofware Architecture)
 
 LANGUAGE
 Indonesian
+
+CATEGORY
+Education
 
 LICENSE
 creative_commons
@@ -41,8 +48,17 @@ public
 MADE_FOR_KIDS
 no
 
+ALTERED_CONTENT
+no
+
+RECORDING_DATE
+2026-11-14
+
 COVER
 slides/slide_01.png
+
+SUBTITLES
+session10.srt
 """
 
 
@@ -164,12 +180,19 @@ class UploadFieldTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         (self.tmp / "slides").mkdir()
         (self.tmp / "slides" / "slide_01.png").write_bytes(b"img")
+        (self.tmp / "session10.mp4").write_bytes(b"video")
+        (self.tmp / "session10.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHalo\n")
 
     def test_reads_every_setting(self):
         self.assertEqual(parse_upload_fields(NARRATOR_TXT, self.tmp), {
+            "video": self.tmp / "session10.mp4",
             "playlist": "Arsitektur Perangkat Lunak (Sofware Architecture)",
-            "language": "Indonesian", "license": "creative_commons", "visibility": "public",
-            "made_for_kids": False, "cover": self.tmp / "slides" / "slide_01.png"})
+            "language": "Indonesian", "category": "Education",
+            "license": "creative_commons", "visibility": "public",
+            "made_for_kids": False, "altered_content": False,
+            "recording_date": date(2026, 11, 14),
+            "cover": self.tmp / "slides" / "slide_01.png",
+            "subtitles": self.tmp / "session10.srt"})
 
     def test_settings_do_not_leak_into_the_tags(self):
         title, desc, tags = YouTubeUploader._parse_caption(NARRATOR_TXT)
@@ -179,7 +202,9 @@ class UploadFieldTests(unittest.TestCase):
 
     def test_invalid_values_and_missing_cover_are_left_out(self):
         text = ("TITLE\nT\n\nLICENSE\nweird\n\nVISIBILITY\nsecret\n\n"
-                "MADE_FOR_KIDS\nmaybe\n\nCOVER\nnope.png\n")
+                "MADE_FOR_KIDS\nmaybe\n\nALTERED_CONTENT\nperhaps\n\n"
+                "RECORDING_DATE\n14/11/2026\n\nVIDEO\ngone.mp4\n\n"
+                "COVER\nnope.png\n\nSUBTITLES\nnone.srt\n")
         with mock.patch("builtins.print"):
             self.assertEqual(parse_upload_fields(text, self.tmp), {})
 
