@@ -1,7 +1,8 @@
 """Unit tests for the YouTube additions: video-id parsing, the playlist search query,
 the 2 MB thumbnail guard, the slides/ cover fallback, the ledger's video_id fields,
-and how delete_youtube.py resolves its target. No browser, no network; the
-thumbnail test needs ffmpeg and is skipped without it.
+how delete_youtube.py resolves its target, and how the upload dialog is handed the
+file again when Studio drops it. No browser, no network; the thumbnail test needs
+ffmpeg and is skipped without it.
 """
 import shutil
 import subprocess
@@ -12,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import delete_youtube
-from uploader import Settings, Ledger, YouTubeUploader
+from uploader import Settings, Ledger, UploadFailed, YouTubeUploader
 from uploader.uploaders.base import VideoUploader
 from uploader.uploaders.youtube import THUMBNAIL_MAX_BYTES, parse_upload_fields, parse_video_id
 
@@ -227,6 +228,104 @@ class DeleteTargetTests(unittest.TestCase):
         self.assertIsNone(delete_youtube.resolve_video_id(str(video), self.uploader))
         self.uploader.ledger.mark_uploaded(video, "youtube", extra={"video_id": "t9Z0Bku_itE"})
         self.assertEqual(delete_youtube.resolve_video_id(str(video), self.uploader), "t9Z0Bku_itE")
+
+
+class ClockPage:
+    """A page stand-in whose wait_for_timeout moves a fake clock forward."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def wait_for_timeout(self, ms):
+        self.now += ms / 1000
+
+
+class SelectVideoTests(unittest.TestCase):
+    """_select_video's decisions, with every browser step replaced by a stub."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.uploader = YouTubeUploader(Settings(ledger_path=self.tmp / "ledger.json"))
+        self.video = self.tmp / "session12.mp4"
+        self.handed = []
+        self.reloads = 0
+        self.uploader._open_picker = lambda page: True
+        self.uploader._hand_over = lambda page, video, how: self.handed.append(how)
+        self.uploader._navigate = self._count_reload
+
+    def _count_reload(self, page):
+        self.reloads += 1
+
+    def _outcomes(self, *outcomes):
+        queue = list(outcomes)
+        self.uploader._wait_for_details = lambda page: queue.pop(0)
+
+    def test_a_dropped_file_is_handed_over_again_another_way(self):
+        self._outcomes("not-taken", "details")
+        with mock.patch("builtins.print"):
+            self.uploader._select_video(None, self.video)
+        self.assertEqual(self.handed, ["set the file", "reload and set the file"])
+        self.assertEqual(self.reloads, 1)
+
+    def test_every_way_dropped_stops_the_run(self):
+        self._outcomes("not-taken", "not-taken", "not-taken")
+        with mock.patch("builtins.print"), self.assertRaises(UploadFailed) as caught:
+            self.uploader._select_video(None, self.video)
+        self.assertEqual(self.handed, list(YouTubeUploader._SELECT_STRATEGIES))
+        self.assertIn("safe to run again", str(caught.exception))
+
+    def test_a_taken_file_is_never_handed_over_twice(self):
+        self._outcomes("taken")
+        with mock.patch("builtins.print"), self.assertRaises(UploadFailed) as caught:
+            self.uploader._select_video(None, self.video)
+        self.assertEqual(self.handed, ["set the file"])
+        self.assertIn("draft", str(caught.exception))
+
+    def test_a_dialog_that_never_opens_moves_to_the_next_way(self):
+        ready = [False, True]
+        self.uploader._open_picker = lambda page: ready.pop(0)
+        self._outcomes("details")
+        with mock.patch("builtins.print"):
+            self.uploader._select_video(None, self.video)
+        self.assertEqual(self.handed, ["reload and set the file"])
+
+
+class WaitForDetailsTests(unittest.TestCase):
+    """_wait_for_details against a fake clock that only the page's waits move."""
+
+    def setUp(self):
+        self.page = ClockPage()
+        self.uploader = YouTubeUploader(
+            Settings(ledger_path=Path(tempfile.mkdtemp()) / "ledger.json"))
+        patcher = mock.patch("uploader.uploaders.youtube.time")
+        fake_time = patcher.start()
+        self.addCleanup(patcher.stop)
+        fake_time.time.side_effect = lambda: self.page.now
+
+    def _screen(self, title_from=None, button_until=None):
+        """What is visible when: the title box from `title_from` seconds on (never
+        when None), the "Select files" button until `button_until` seconds (always
+        when None)."""
+        def visible(page, selector_csv):
+            if selector_csv == YouTubeUploader._TITLE_BOX:
+                return title_from is not None and page.now >= title_from
+            return button_until is None or page.now < button_until
+        self.uploader._visible = visible
+
+    def test_the_title_box_means_details(self):
+        self._screen(title_from=5, button_until=2)
+        self.assertEqual(self.uploader._wait_for_details(self.page), "details")
+        self.assertLess(self.page.now, 10)
+
+    def test_a_button_that_stays_means_not_taken(self):
+        self._screen()
+        self.assertEqual(self.uploader._wait_for_details(self.page), "not-taken")
+        self.assertGreaterEqual(self.page.now, YouTubeUploader._NOT_TAKEN_AFTER_S)
+
+    def test_a_button_that_goes_without_a_form_means_taken(self):
+        self._screen(button_until=3)
+        self.assertEqual(self.uploader._wait_for_details(self.page), "taken")
+        self.assertGreaterEqual(self.page.now, 3 + YouTubeUploader._DETAILS_AFTER_TAKEN_S)
 
 
 if __name__ == "__main__":

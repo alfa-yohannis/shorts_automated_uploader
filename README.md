@@ -727,6 +727,14 @@ DISPLAY=:0 ./venv/bin/python upload_youtube.py \
 - Cover/thumbnail is **landscape-only** (the web app rejects Short thumbnails, so it's
   skipped for portrait).
 - Same `--force` / ledger as the other platforms (`youtube` is its own ledger list).
+- **Handing over the file.** Studio can ignore a file set too early: on a freshly
+  launched Chrome the dialog's hidden file input is in the page before the dialog
+  listens to it. The uploader waits for the visible **Select files** button, then reads
+  the result. While that button is still up the file was not taken, so it tries another
+  way: set the file, reload and set it again, then click **Select files** and answer the
+  file chooser. Once the button is gone Studio is uploading, so it only waits longer and
+  never hands the file over twice. When nothing works it stops with `FAILED: ...` and
+  exit code 1 before touching any other field, and records nothing.
 
 ### 17.3 Caption → metadata
 

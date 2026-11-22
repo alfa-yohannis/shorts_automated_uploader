@@ -44,7 +44,7 @@ from datetime import date
 from pathlib import Path
 
 from ..browser import StealthBrowser
-from .base import LoginRequired, VideoUploader
+from .base import LoginRequired, UploadFailed, VideoUploader
 
 #: YouTube rejects custom thumbnails larger than 2 MB.
 THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
@@ -164,6 +164,10 @@ class YouTubeUploader(VideoUploader):
     _CREATE_BTN = "ytcp-button#create-icon, #create-icon, button[aria-label='Create']"
     _UPLOAD_ITEM = "Upload videos"                       # menu item text
     _FILE_INPUT = "input[type=file]"
+    _DIALOG_FILE_INPUT = "ytcp-uploads-dialog input[type=file]"
+    # the picker's visible button; the hidden file input exists before the dialog
+    # listens to it, so this button is what shows the dialog is ready for a file
+    _SELECT_FILES_BTN = "ytcp-uploads-file-picker #select-files-button, #select-files-button"
     _TITLE_BOX = "#title-textarea #textbox, ytcp-social-suggestions-textbox#title-textarea #textbox"
     _DESC_BOX = "#description-textarea #textbox, ytcp-social-suggestions-textbox#description-textarea #textbox"
     _THUMB_INPUT = "input#file-loader, input[type=file][accept*='image']"
@@ -219,6 +223,14 @@ class YouTubeUploader(VideoUploader):
 
     #: youtu.be link of the last upload, read from the dialog (None until known)
     video_url: str | None = None
+
+    #: ways to hand Studio the file, tried in this order (see _select_video)
+    _SELECT_STRATEGIES = ("set the file", "reload and set the file", "use the file chooser")
+    #: seconds the "Select files" button may stay up after the file is handed over
+    #: before that attempt counts as not taken
+    _NOT_TAKEN_AFTER_S = 45
+    #: seconds the Details form may still take once Studio has taken the file
+    _DETAILS_AFTER_TAKEN_S = 180
 
     # Only TRUE post-publish confirmations — NOT "processing"/"uploading" text, which
     # shows during the normal upload and would falsely report success before Publish.
@@ -282,25 +294,101 @@ class YouTubeUploader(VideoUploader):
         page.wait_for_timeout(4000)   # Studio is slow to hydrate
 
     def _select_video(self, page, video: Path):
-        # The upload URL usually auto-opens the dialog (file input present). If it
-        # isn't there, open it the long way: Create -> "Upload videos".
+        """Hand the video to Studio's upload dialog and wait for the Details form.
+
+        Studio can drop the file without a word. On a freshly launched Chrome the
+        dialog's hidden file input is in the page before the dialog listens to it,
+        so the file is set and nothing happens. Each attempt therefore waits for the
+        visible "Select files" button first, then reads the outcome. While that
+        button is still on screen Studio has not taken the file and another attempt
+        is safe. Once it is gone Studio has started an upload, and another attempt
+        would make a second draft, so the run only waits longer. The attempts are
+        `_SELECT_STRATEGIES`: set the file, reload the page and set it again, then
+        click "Select files" and answer the file chooser as a person would.
+
+        Raises UploadFailed before any other field is touched when no attempt is
+        taken, or when Studio took the file but the form never came up. Returns
+        None once the Details form is on screen."""
+        for attempt, how in enumerate(self._SELECT_STRATEGIES, 1):
+            if how.startswith("reload"):
+                self._navigate(page)
+            if not self._open_picker(page):
+                print(f"Upload dialog not ready (attempt {attempt}, {how}).", flush=True)
+                continue
+            try:
+                self._hand_over(page, video, how)
+            except Exception as e:
+                print(f"Could not hand the file over ({how}): {e}", flush=True)
+                continue
+            print(f"Video selected ({how}), uploading/processing...", flush=True)
+            outcome = self._wait_for_details(page)
+            if outcome == "details":
+                return
+            if outcome == "taken":
+                raise UploadFailed(
+                    f"Studio took '{video.name}' but the Details form did not appear "
+                    f"within {self._DETAILS_AFTER_TAKEN_S} s. A draft may now exist in "
+                    "Studio; check Content before uploading again.")
+            print(f"Studio did not take the file ({how}); trying another way.", flush=True)
+        raise UploadFailed(
+            f"Studio never took '{video.name}' after {len(self._SELECT_STRATEGIES)} "
+            f"attempts ({', '.join(self._SELECT_STRATEGIES)}). Nothing was uploaded, "
+            "so it is safe to run again.")
+
+    def _open_picker(self, page) -> bool:
+        """True once the upload dialog shows its "Select files" button. The upload
+        URL usually opens the dialog itself; when it does not, the dialog is opened
+        the long way, Create -> "Upload videos". False when the button never shows."""
+        button = page.locator(self._SELECT_FILES_BTN).first
         try:
-            page.wait_for_selector(self._FILE_INPUT, state="attached", timeout=8000)
+            button.wait_for(state="visible", timeout=20000)
         except Exception:
             print("Upload dialog not auto-open; opening via Create -> Upload videos.", flush=True)
             if self._click_first(page, self._CREATE_BTN, timeout=20000):
                 page.wait_for_timeout(1000)
                 self._click_text(page, self._UPLOAD_ITEM)
-                page.wait_for_timeout(1500)
-            page.wait_for_selector(self._FILE_INPUT, state="attached", timeout=30000)
-        page.set_input_files(self._FILE_INPUT, str(video))
-        print("Video selected, uploading/processing...", flush=True)
-        # wait for the Details dialog (title box) to render
-        try:
-            page.wait_for_selector(self._TITLE_BOX.split(",")[0].strip(),
-                                   state="visible", timeout=90000)
-        except Exception:
-            page.wait_for_timeout(8000)
+            try:
+                button.wait_for(state="visible", timeout=30000)
+            except Exception:
+                return False
+        page.wait_for_timeout(1500)   # let the dialog finish wiring its listeners
+        return True
+
+    def _hand_over(self, page, video: Path, how: str):
+        """Give Studio the file in the way `how` names: answer the file chooser
+        that "Select files" opens, or set the dialog's own file input directly
+        (any file input when the dialog's own is not found)."""
+        if how == "use the file chooser":
+            with page.expect_file_chooser(timeout=15000) as chooser:
+                page.locator(self._SELECT_FILES_BTN).first.click(timeout=10000)
+            chooser.value.set_files(str(video))
+            return
+        inputs = page.locator(self._DIALOG_FILE_INPUT)
+        if not inputs.count():
+            inputs = page.locator(self._FILE_INPUT)
+        inputs.first.set_input_files(str(video))
+
+    def _wait_for_details(self, page) -> str:
+        """Watch the dialog after the file is handed over. Returns "details" once the
+        title box is on screen, "not-taken" when the "Select files" button is still
+        up after `_NOT_TAKEN_AFTER_S` seconds, or "taken" when that button has gone
+        (Studio is uploading) but the title box is still missing after
+        `_DETAILS_AFTER_TAKEN_S` more seconds."""
+        not_taken_at = time.time() + self._NOT_TAKEN_AFTER_S
+        give_up_at = None
+        while True:
+            if self._visible(page, self._TITLE_BOX):
+                return "details"
+            now = time.time()
+            if self._visible(page, self._SELECT_FILES_BTN):
+                if now >= not_taken_at:
+                    return "not-taken"
+            else:
+                if give_up_at is None:
+                    give_up_at = now + self._DETAILS_AFTER_TAKEN_S
+                if now >= give_up_at:
+                    return "taken"
+            page.wait_for_timeout(1000)
 
     def _set_caption(self, page, caption: str):
         """Set title + description parsed from the TITLE/DESCRIPTION/KEYWORDS layout."""
@@ -1059,6 +1147,18 @@ class YouTubeUploader(VideoUploader):
                 except Exception:
                     pass
             page.wait_for_timeout(500)
+        return False
+
+    @staticmethod
+    def _visible(page, selector_csv: str) -> bool:
+        """True when any of the comma-separated selectors has a visible match."""
+        for sel in (s.strip() for s in selector_csv.split(",") if s.strip()):
+            try:
+                loc = page.locator(sel)
+                if loc.count() and loc.first.is_visible():
+                    return True
+            except Exception:
+                continue
         return False
 
     @staticmethod

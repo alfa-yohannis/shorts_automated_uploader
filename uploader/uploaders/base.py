@@ -25,6 +25,11 @@ class LoginRequired(Exception):
     """Raised when no saved profile exists for the platform."""
 
 
+class UploadFailed(Exception):
+    """Raised when the platform never takes the video file, so the run stops before
+    any other field is touched. Nothing is recorded in the ledger."""
+
+
 class VideoUploader(ABC):
     """Template-method base for all platform uploaders."""
 

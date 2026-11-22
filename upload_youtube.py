@@ -28,7 +28,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from uploader import YouTubeUploader, Settings, UploadSkipped, AlreadyUploaded, LoginRequired
+from uploader import (YouTubeUploader, Settings, UploadSkipped, AlreadyUploaded,
+                      LoginRequired, UploadFailed)
 from uploader.uploaders.youtube import parse_upload_fields
 
 
@@ -149,6 +150,9 @@ def main():
         sys.exit(0)
     except LoginRequired as e:
         print(e)
+        sys.exit(1)
+    except UploadFailed as e:
+        print(f"FAILED: {e}", flush=True)
         sys.exit(1)
     if uploader.video_url:
         print(f"Video URL: {uploader.video_url}")

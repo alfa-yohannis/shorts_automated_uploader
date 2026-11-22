@@ -14,11 +14,11 @@ from .browser import StealthBrowser, Monitor
 from .auth import LoginManager
 from .uploaders import (
     VideoUploader, TikTokUploader, InstagramUploader, YouTubeUploader,
-    UploadSkipped, AlreadyUploaded, LoginRequired,
+    UploadSkipped, AlreadyUploaded, LoginRequired, UploadFailed,
 )
 
 __all__ = [
     "Settings", "Ledger", "StealthBrowser", "Monitor", "LoginManager",
     "VideoUploader", "TikTokUploader", "InstagramUploader", "YouTubeUploader",
-    "UploadSkipped", "AlreadyUploaded", "LoginRequired",
+    "UploadSkipped", "AlreadyUploaded", "LoginRequired", "UploadFailed",
 ]
