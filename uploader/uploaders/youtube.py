@@ -56,6 +56,35 @@ THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
 #: YouTube's public oEmbed endpoint; it answers with a title only for a published
 #: public or unlisted video, never for a draft or a private one.
 OEMBED_URL = "https://www.youtube.com/oembed?format=json&url="
+
+#: YouTube allows 500 characters of tags, counted its own way (see tag_cost). Past
+#: that the Details step shows an error and Next no longer advances, so the run
+#: stalls with every later step "not found". Ten characters are kept spare.
+TAGS_BUDGET = 490
+
+
+def tag_cost(tag: str, first: bool) -> int:
+    """Characters one tag uses against YouTube's limit: its own length, two more
+    for the quotes Studio puts around a tag that contains a space, and one for the
+    comma before it unless it is the first tag."""
+    quotes = 2 if " " in tag else 0
+    comma = 0 if first else 1
+    return len(tag) + quotes + comma
+
+
+def tags_within_budget(tags: list[str], budget: int = TAGS_BUDGET) -> list[str]:
+    """The tags, in their order, that fit within `budget` as YouTube counts them.
+    A tag that does not fit is left out whole rather than cut, and a later, shorter
+    tag may still take its place. Returns the list of tags to type."""
+    kept: list[str] = []
+    used = 0
+    for tag in tags:
+        cost = tag_cost(tag, first=not kept)
+        if used + cost > budget:
+            continue
+        kept.append(tag)
+        used += cost
+    return kept
 #: the 11-character id in youtu.be/<id>, watch?v=<id>, shorts/<id>, video/<id>
 _ID = r"[0-9A-Za-z_-]{11}"
 _ID_IN_LINK = [rf"youtu\.be/({_ID})", rf"[?&]v=({_ID})", rf"/shorts/({_ID})", rf"/video/({_ID})"]
@@ -787,15 +816,23 @@ class YouTubeUploader(VideoUploader):
         self._set_license(page)
 
     def _set_tags(self, page, tags):
+        """Type the tags that fit YouTube's character budget (see tags_within_budget).
+        Cutting the joined text at a fixed length was not enough: the quotes Studio
+        adds around multi-word tags pushed a 489-character list to 511 and blocked
+        the Details step."""
         if not tags:
             return
+        kept = tags_within_budget(tags)
+        if len(kept) < len(tags):
+            print(f"Tags trimmed to YouTube's limit: kept {len(kept)} of {len(tags)}.",
+                  flush=True)
         try:
             box = page.locator(self._TAGS_INPUT)
             if not box.count():
                 print("Tags input not found; skipping.", flush=True); return
             box.first.scroll_into_view_if_needed(timeout=5000)
             box.first.click(timeout=8000)
-            page.keyboard.insert_text(", ".join(tags)[:480] + ",")   # trailing comma commits the last tag
+            page.keyboard.insert_text(", ".join(kept) + ",")   # trailing comma commits the last tag
             # Dismiss the tag-suggestion overlay by moving focus, NOT with Escape:
             # inside a modal, Escape tells the whole upload dialog to CLOSE — the
             # dialog then tears down/re-renders, its `dialog-scrim` covers everything,
@@ -803,7 +840,7 @@ class YouTubeUploader(VideoUploader):
             # detached from the DOM") fails. Tab just leaves the field.
             box.first.press("Tab")
             page.wait_for_timeout(800)
-            print(f"Tags set ({len(tags)}).", flush=True)
+            print(f"Tags set ({len(kept)}).", flush=True)
         except Exception as e:
             print(f"Tags step skipped ({e}).", flush=True)
 

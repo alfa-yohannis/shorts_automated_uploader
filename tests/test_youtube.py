@@ -16,8 +16,9 @@ from unittest import mock
 import delete_youtube
 from uploader import Settings, Ledger, UploadFailed, YouTubeUploader
 from uploader.uploaders.base import VideoUploader
-from uploader.uploaders.youtube import (THUMBNAIL_MAX_BYTES, parse_upload_fields,
-                                        parse_video_id, served_by_oembed)
+from uploader.uploaders.youtube import (TAGS_BUDGET, THUMBNAIL_MAX_BYTES,
+                                        parse_upload_fields, parse_video_id,
+                                        served_by_oembed, tag_cost, tags_within_budget)
 
 #: a youtube.txt as slides_narrator writes it, upload settings after KEYWORDS
 NARRATOR_TXT = """TITLE
@@ -328,6 +329,29 @@ class WaitForDetailsTests(unittest.TestCase):
         self._screen(button_until=3)
         self.assertEqual(self.uploader._wait_for_details(self.page), "taken")
         self.assertGreaterEqual(self.page.now, 3 + YouTubeUploader._DETAILS_AFTER_TAKEN_S)
+
+
+class TagBudgetTests(unittest.TestCase):
+    """Tags are counted the way YouTube counts them, and dropped whole."""
+
+    def test_quotes_and_commas_are_counted(self):
+        self.assertEqual(tag_cost("SOA", first=True), 3)
+        self.assertEqual(tag_cost("SOA", first=False), 4)            # comma before it
+        self.assertEqual(tag_cost("service worker", first=False), 17)  # 14 + 2 quotes + 1
+
+    def test_the_list_that_blocked_session_11_now_fits(self):
+        tags = ["multi word tag %02d" % i for i in range(29)]     # 17 chars each, quoted
+        raw = ", ".join(tags)
+        self.assertLess(len(raw), 600)
+        kept = tags_within_budget(tags)
+        used = sum(tag_cost(t, first=(i == 0)) for i, t in enumerate(kept))
+        self.assertLessEqual(used, TAGS_BUDGET)
+        self.assertEqual(kept, tags[:len(kept)])                     # order kept, none cut
+        self.assertTrue(all(t in tags for t in kept))
+
+    def test_a_long_tag_is_skipped_and_a_short_one_still_fits(self):
+        kept = tags_within_budget(["a" * 8, "b" * 20, "c"], budget=12)
+        self.assertEqual(kept, ["a" * 8, "c"])
 
 
 class PublishedCheckTests(unittest.TestCase):
