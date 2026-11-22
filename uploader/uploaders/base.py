@@ -95,8 +95,14 @@ class VideoUploader(ABC):
         elif posted:
             print(f"Shared, but --no-post -> NOT recorded in the ledger (re-runnable).", flush=True)
         else:
-            print("No confirmed post detected -> NOT recorded (safe to retry).", flush=True)
+            print(f"No confirmed post detected -> NOT recorded ({self.retry_note()}).",
+                  flush=True)
         return posted
+
+    def retry_note(self) -> str:
+        """Advice printed when no post was confirmed. A platform that can tell a video
+        already exists overrides it, so the advice never invites a duplicate."""
+        return "safe to retry"
 
     # --- input resolution helpers ----------------------------------------
 

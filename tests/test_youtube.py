@@ -1,13 +1,14 @@
 """Unit tests for the YouTube additions: video-id parsing, the playlist search query,
 the 2 MB thumbnail guard, the slides/ cover fallback, the ledger's video_id fields,
-how delete_youtube.py resolves its target, and how the upload dialog is handed the
-file again when Studio drops it. No browser, no network; the thumbnail test needs
-ffmpeg and is skipped without it.
+how delete_youtube.py resolves its target, how the upload dialog is handed the file
+again when Studio drops it, and the oEmbed check that confirms a publish. No browser,
+no network; the thumbnail test needs ffmpeg and is skipped without it.
 """
 import shutil
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from datetime import date
 from pathlib import Path
 from unittest import mock
@@ -15,7 +16,8 @@ from unittest import mock
 import delete_youtube
 from uploader import Settings, Ledger, UploadFailed, YouTubeUploader
 from uploader.uploaders.base import VideoUploader
-from uploader.uploaders.youtube import THUMBNAIL_MAX_BYTES, parse_upload_fields, parse_video_id
+from uploader.uploaders.youtube import (THUMBNAIL_MAX_BYTES, parse_upload_fields,
+                                        parse_video_id, served_by_oembed)
 
 #: a youtube.txt as slides_narrator writes it, upload settings after KEYWORDS
 NARRATOR_TXT = """TITLE
@@ -326,6 +328,39 @@ class WaitForDetailsTests(unittest.TestCase):
         self._screen(button_until=3)
         self.assertEqual(self.uploader._wait_for_details(self.page), "taken")
         self.assertGreaterEqual(self.page.now, 3 + YouTubeUploader._DETAILS_AFTER_TAKEN_S)
+
+
+class PublishedCheckTests(unittest.TestCase):
+    """The oEmbed check that confirms a publish Studio's dialog text did not show,
+    and the retry advice once Studio holds a video."""
+
+    @staticmethod
+    def _reply(body: bytes):
+        reply = mock.MagicMock()
+        reply.__enter__.return_value.read.return_value = body
+        return reply
+
+    def test_a_title_from_oembed_means_served(self):
+        with mock.patch("urllib.request.urlopen",
+                        return_value=self._reply(b'{"title": "Kuliah"}')) as urlopen:
+            self.assertTrue(served_by_oembed("https://youtu.be/W3klAHSsmUQ"))
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertIn("youtu.be%2FW3klAHSsmUQ", urlopen.call_args[0][0])
+
+    def test_refusals_are_asked_again_then_give_false(self):
+        refusal = urllib.error.HTTPError("u", 401, "Unauthorized", None, None)
+        with mock.patch("urllib.request.urlopen", side_effect=refusal) as urlopen, \
+                mock.patch("time.sleep") as sleep:
+            self.assertFalse(served_by_oembed("https://youtu.be/W3klAHSsmUQ", tries=3))
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_retry_advice_warns_once_studio_holds_a_video(self):
+        uploader = YouTubeUploader(Settings(ledger_path=Path(tempfile.mkdtemp()) / "l.json"))
+        self.assertEqual(uploader.retry_note(), "safe to retry")
+        uploader.video_url = "https://youtu.be/W3klAHSsmUQ"
+        self.assertIn("https://youtu.be/W3klAHSsmUQ", uploader.retry_note())
+        self.assertIn("second copy", uploader.retry_note())
 
 
 if __name__ == "__main__":

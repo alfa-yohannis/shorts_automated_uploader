@@ -735,6 +735,13 @@ DISPLAY=:0 ./venv/bin/python upload_youtube.py \
   file chooser. Once the button is gone Studio is uploading, so it only waits longer and
   never hands the file over twice. When nothing works it stops with `FAILED: ...` and
   exit code 1 before touching any other field, and records nothing.
+- **Confirming the publish.** Studio rewords its post-Publish dialogs now and then, so
+  the confirmation text can be missed. For a public or unlisted video the uploader then
+  asks YouTube's oEmbed endpoint, up to six times ten seconds apart, and counts the
+  video as published once it answers with a title. A video still waiting for processing
+  ("Pending") already counts, the same as the "before your video is public" dialog.
+  When nothing confirms it, the message names the video link instead of saying "safe
+  to retry", since running again would upload a second copy.
 
 ### 17.3 Caption → metadata
 

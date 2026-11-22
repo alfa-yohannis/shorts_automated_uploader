@@ -35,11 +35,15 @@ Visibility -> Publish.
 Delete: ``delete()`` opens the video's Studio edit page -> Options -> Delete ->
 ticks "I understand ..." -> confirms, then drops the video from the ledger.
 """
+import json
 import random
 import re
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import date
 from pathlib import Path
 
@@ -48,6 +52,10 @@ from .base import LoginRequired, UploadFailed, VideoUploader
 
 #: YouTube rejects custom thumbnails larger than 2 MB.
 THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
+
+#: YouTube's public oEmbed endpoint; it answers with a title only for a published
+#: public or unlisted video, never for a draft or a private one.
+OEMBED_URL = "https://www.youtube.com/oembed?format=json&url="
 #: the 11-character id in youtu.be/<id>, watch?v=<id>, shorts/<id>, video/<id>
 _ID = r"[0-9A-Za-z_-]{11}"
 _ID_IN_LINK = [rf"youtu\.be/({_ID})", rf"[?&]v=({_ID})", rf"/shorts/({_ID})", rf"/video/({_ID})"]
@@ -148,6 +156,25 @@ def parse_video_id(ref: str) -> str | None:
         if match:
             return match.group(1)
     return ref if re.fullmatch(_ID, ref) else None
+
+
+def served_by_oembed(video_url: str, tries: int = 6, wait_s: float = 10.0) -> bool:
+    """True once YouTube's oEmbed endpoint returns a title for `video_url`, which
+    happens only after a public or unlisted video is published. It is asked `tries`
+    times, `wait_s` seconds apart, because the answer can lag the Publish click.
+    Returns False for a draft, a private video, or when YouTube cannot be reached."""
+    query = urllib.parse.quote(video_url, safe="")
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(OEMBED_URL + query, timeout=15) as reply:
+                body = json.loads(reply.read().decode("utf-8"))
+            if body.get("title"):
+                return True
+        except (urllib.error.URLError, ValueError, OSError):
+            pass
+        if attempt < tries - 1:
+            time.sleep(wait_s)
+    return False
 
 
 class YouTubeUploader(VideoUploader):
@@ -956,7 +983,28 @@ class YouTubeUploader(VideoUploader):
             print("Clicked Publish; waiting for confirmation...", flush=True)
         else:
             print("Publish button never became clickable; click it by hand.", flush=True)
-        return self._wait_for_success(page, 120000, confirm=True)
+        posted = self._wait_for_success(page, 120000, confirm=True)
+        # Studio rewords its post-Publish dialogs now and then, so a published video
+        # can go unnoticed. A public or unlisted one can still be confirmed from
+        # outside Studio; a private one cannot, and stays unconfirmed.
+        visibility = (self.settings.yt_visibility or "public").lower()
+        if not posted and self.video_url and visibility != "private":
+            print("No publish confirmation on screen; asking YouTube whether it serves "
+                  f"{self.video_url} ...", flush=True)
+            posted = served_by_oembed(self.video_url)
+            if posted:
+                print("YouTube serves the video (oEmbed); counting it as published.",
+                      flush=True)
+        return posted
+
+    def retry_note(self) -> str:
+        """Say "safe to retry" only while Studio holds no video from this run. Once
+        the dialog showed a link Studio has a video, draft or published, so running
+        again would upload a second copy."""
+        if self.video_url:
+            return (f"but Studio already holds {self.video_url}; check it there before "
+                    "running again, or a second copy is uploaded")
+        return "safe to retry"
 
     def _click_publish(self, page, timeout_ms: int = 90000) -> bool:
         """Click Publish, retrying until it works. The button is often present but
